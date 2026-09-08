@@ -27,16 +27,16 @@ Sistem hooks beroperasi secara simetris di dua titik genting siklus hidup tool a
 ├───────────────────────────────┬──────────────────────────────────┬───────────────────────────────┤
 │ Nama Hook di hooks.json       │ Matcher Tools                    │ Tanggung Jawab Spesifik       │
 ├───────────────────────────────┼──────────────────────────────────┼───────────────────────────────┤
-│ 1. precision-slicing-guard    │ view_file                        │ • Larang baca file tanpa batas│
-│    (pre-view-file.cjs)        │                                  │ • Batasi span <= 80 baris     │
+│ 1. precision-slicing-guard    │ view_file                        │ • Workspace boundary (.md utuh) │
+│    (pre-view-file.cjs)        │                                  │ • Batasi span <= 80 baris (kode) │
 │                               │                                  │ • Larang slicing loop (>= 2x) │
-│                               │                                  │ • Batasi kumulatif 120 baris  │
-│                               │                                  │ • Circuit Breaker Check       │
+│                               │                                  │ • Batasi kumulatif 150 baris  │
+│                               │                                  │ • Circuit Breaker Check (3x)  │
 ├───────────────────────────────┼──────────────────────────────────┼───────────────────────────────┤
-│ 2. search-quota-breaker       │ grep_search, find_by_name,       │ • Kuota investigasi <= 2 calls│
-│    (pre-search-quota.cjs)     │ call_mcp_tool, invoke_subagent   │ • Blokir grep wildcard dump   │
-│                               │                                  │ • Blokir delegasi dump subagent│
-│                               │                                  │ • Circuit Breaker Check       │
+│ 2. search-quota-breaker       │ grep_search, find_by_name,       │ • Kuota investigasi <= 4 calls│
+│    (pre-search-quota.cjs)     │ call_mcp_tool (discovery only)   │ • Blokir grep wildcard dump   │
+│                               │                                  │ • Exclude execution sandboxes │
+│                               │                                  │ • Circuit Breaker Check (3x)  │
 ├───────────────────────────────┼──────────────────────────────────┼───────────────────────────────┤
 │ 3. command-gatekeeper         │ run_command                      │ • Blokir shell dump (POSIX)   │
 │    (pre-run-command.cjs)      │                                  │ • Blokir git dump & staging   │
@@ -140,8 +140,8 @@ Sistem menjamin **0% Race Condition** melalui 3 pilar isolasi:
 | File | Peran & Tanggung Jawab | Ukuran / Kompleksitas |
 |---|---|---|
 | [`hooks/lib/session-state.cjs`](file:///home/shironim/Project/harness-engineering/hooks/lib/session-state.cjs) | State manager sentral. Melacak kuota pencarian, baris pembacaan kumulatif per file, riwayat penolakan, dan circuit breaker status. | ~100 baris, Vanilla JS |
-| [`hooks/pre-view-file.cjs`](file:///home/shironim/Project/harness-engineering/hooks/pre-view-file.cjs) | Gatekeeper pembacaan file. Mencegah dumping tanpa batas, membatasi span $\le 80$ baris, dan mencegah loop slicing berturut-turut. | ~95 baris, Pure Regex/Logic |
-| [`hooks/pre-search-quota.cjs`](file:///home/shironim/Project/harness-engineering/hooks/pre-search-quota.cjs) | Gatekeeper investigasi. Membatasi penelusuran maksimal 2 pemanggilan per turn, memblokir grep-dump wildcard, dan mencegah eskapisme subagent. | ~90 baris, High Efficiency |
+| [`hooks/pre-view-file.cjs`](file:///home/shironim/Project/harness-engineering/hooks/pre-view-file.cjs) | Gatekeeper pembacaan file. Mengizinkan pembacaan dokumen utuh dalam active workspace, membatasi span $\le 80$ baris untuk source code & dokumen eksternal, dan mencegah loop slicing. | ~100 baris, Pure Regex/Logic |
+| [`hooks/pre-search-quota.cjs`](file:///home/shironim/Project/harness-engineering/hooks/pre-search-quota.cjs) | Gatekeeper investigasi. Membatasi penelusuran maksimal 4 pemanggilan per turn, mengecualikan execution sandbox (`ctx_execute`), dan memblokir grep-dump wildcard. | ~95 baris, High Efficiency |
 | [`hooks/pre-run-command.cjs`](file:///home/shironim/Project/harness-engineering/hooks/pre-run-command.cjs) | Gatekeeper terminal. Memblokir POSIX dumping, staging bypass, dan memvalidasi izin eksekusi build/test dengan negation-aware parser. | ~110 baris, Strict Patterns |
 | [`hooks/post-transcript-gc.cjs`](file:///home/shironim/Project/harness-engineering/hooks/post-transcript-gc.cjs) | Runtime Memory Garbage Collector. Memangkas log output usang di `transcript.jsonl` dan menyisakan konteks esensial. | ~140 baris, Safe Stream Engine |
 
@@ -197,7 +197,7 @@ Daftarkan hooks ke dalam konfigurasi agent CLI / IDE (`config/hooks.json` atau r
         "hooks": [{ "type": "command", "command": "node hooks/pre-view-file.cjs" }]
       },
       {
-        "matcher": "grep_search|find_by_name|call_mcp_tool|invoke_subagent",
+        "matcher": "grep_search|find_by_name|call_mcp_tool",
         "hooks": [{ "type": "command", "command": "node hooks/pre-search-quota.cjs" }]
       },
       {

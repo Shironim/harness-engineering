@@ -39,14 +39,15 @@ This repository implements a **Two-Layer Deterministic Harness** that operates o
 ├───────────────────────────────┬──────────────────────────────────┬───────────────────────────────┤
 │ Module                        │ Target Tool Matchers             │ Core Hard Guardrail           │
 ├───────────────────────────────┼──────────────────────────────────┼───────────────────────────────┤
-│ precision-slicing-guard       │ view_file                        │ • Strict ≤ 80-line span limit │
+│ precision-slicing-guard       │ view_file                        │ • Workspace boundary (.md utuh)│
+│                               │                                  │ • Strict ≤ 80-line span limit │
 │                               │                                  │ • Anti-slicing chunking loop  │
 │                               │                                  │ • Turn line ceiling (120 lines│
 │                               │                                  │ • Actionable off-ramp guidance│
 ├───────────────────────────────┼──────────────────────────────────┼───────────────────────────────┤
-│ search-quota-breaker          │ grep_search, find_by_name,       │ • Early failure breaker (≤ 2) │
-│                               │ call_mcp_tool, invoke_subagent   │ • Anti-grep wildcard dump ban │
-│                               │                                  │ • Subagent delegation guard   │
+│ search-quota-breaker          │ grep_search, find_by_name,       │ • Early failure breaker (≤ 4) │
+│                               │ call_mcp_tool (discovery only)   │ • Anti-grep wildcard dump ban │
+│                               │                                  │ • Exclude execution sandboxes │
 ├───────────────────────────────┼──────────────────────────────────┼───────────────────────────────┤
 │ command-gatekeeper            │ run_command                      │ • POSIX / Git dump blockade   │
 │                               │                                  │ • Staging script execution ban│
@@ -120,7 +121,7 @@ harness-engineering/
 │   ├── lib/
 │   │   └── session-state.cjs          # Single Source of Truth: turn parsing & circuit breaker ledger
 │   ├── pre-view-file.cjs              # Precision Slicing & Anti-Slicing Loop Guard
-│   ├── pre-search-quota.cjs           # Investigation Quota (≤2 calls) & Subagent Delegation Guard
+│   ├── pre-search-quota.cjs           # Investigation Quota (≤4 calls) & Discovery Scope Guard
 │   ├── pre-run-command.cjs            # POSIX / Git Dump Interceptor & Negation Consent Parser
 │   └── post-transcript-gc.cjs         # Active Memory Garbage Collection & Compaction Engine
 ├── skills/                            # 24 production-grade agentic skills & specialized workflows
@@ -178,7 +179,7 @@ Copy or symlink the hooks configuration into your agent configuration root (e.g.
     "enabled": true,
     "PreToolUse": [
       {
-        "matcher": "grep_search|find_by_name|call_mcp_tool|invoke_subagent",
+        "matcher": "grep_search|find_by_name|call_mcp_tool",
         "hooks": [
           {
             "type": "command",

@@ -120,7 +120,7 @@ Setelah celah eksekusi terminal dan pembacaan file mentah ditutup melalui hard r
 ### Celah A: The "Tool Negotiation Ping-Pong" Loop
 * **Pola Perilaku:** Ketika hook menolak tool call, model tidak langsung berhenti melainkan melakukan *chain-of-thought* internal panjang (500–1.000 token) lalu memanggil ulang tool yang sama dengan parameter yang sedikit diubah secara berulang.
 * **Dampak:** Terjadi siklus penolakan 3–4 kali dalam satu turn. Ribuan token terbuang hanya untuk "berdebat" dengan sistem guardrail.
-* **Solusi Harness:** **Stateful Turn Quota Circuit Breaker** — membatasi pemanggilan investigasi maksimal 2 kali per turn. Jika terlampaui, paksa model berhenti dan bertanya pada pengguna (*Early Failure Interception*).
+* **Solusi Harness:** **Stateful Turn Quota Circuit Breaker** — membatasi pemanggilan investigasi mentah maksimal 4 kali per turn (dengan toleransi circuit breaker 3x penolakan berturut-turut). Jika terlampaui, paksa model berhenti dan berkonsultasi langsung pada pengguna (*Early Failure Interception*).
 
 ### Celah B: Context Accumulation Amnesia across Turns
 * **Pola Perilaku:** Kuota guardrail umumnya dievaluasi independen per turn. Dalam sesi interaksi 20–30 turn, output tool masa lalu yang sudah tidak relevan terus menumpuk di file transkrip (`transcript.jsonl`).
