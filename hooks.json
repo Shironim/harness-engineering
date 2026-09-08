@@ -1,0 +1,62 @@
+{
+  "precision-slicing-guard": {
+    "enabled": true,
+    "PreToolUse": [
+      {
+        "matcher": "view_file",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node hooks/pre-view-file.cjs",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  },
+  "search-quota-breaker": {
+    "enabled": true,
+    "PreToolUse": [
+      {
+        "matcher": "grep_search|find_by_name|call_mcp_tool|invoke_subagent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node hooks/pre-search-quota.cjs",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  },
+  "command-gatekeeper": {
+    "enabled": true,
+    "PreToolUse": [
+      {
+        "matcher": "run_command",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node hooks/pre-run-command.cjs",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  },
+  "transcript-compactor": {
+    "enabled": true,
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node hooks/post-transcript-gc.cjs",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}
