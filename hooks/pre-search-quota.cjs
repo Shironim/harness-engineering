@@ -37,11 +37,11 @@ function main() {
 
   globalTranscriptPath = data.transcriptPath || '';
 
-  // 0. CIRCUIT BREAKER: Hentikan eksekusi jika sudah terjadi 2x penolakan berturut-turut dalam turn ini
-  if (globalTranscriptPath && isCircuitBreakerTripped(globalTranscriptPath, 2)) {
+  // 0. CIRCUIT BREAKER: Hentikan eksekusi jika sudah terjadi 3x penolakan berturut-turut dalam turn ini
+  if (globalTranscriptPath && isCircuitBreakerTripped(globalTranscriptPath, 3)) {
     const payload = {
       decision: 'deny',
-      reason: `[CIRCUIT BREAKER ACTIVATED] Telah terjadi 2x penolakan berturut-turut dalam giliran ini.\n` +
+      reason: `[CIRCUIT BREAKER ACTIVATED] Telah terjadi 3x penolakan berturut-turut dalam giliran ini.\n` +
         `Eksekusi tool dihentikan paksa untuk mencegah loop coba-ulang dan melindungi context window.\n` +
         `TINDAKAN WAJIB: Hentikan pemanggilan tool sekarang, laporkan progres, dan minta instruksi langsung ke pengguna.`
     };
@@ -75,11 +75,10 @@ function main() {
     const mcpTool = args.ToolName || '';
     const isSearchOrReadMcp = [
       'find_code', 'search_code', 'search_notes', 'ctx_search',
-      'ctx_execute_file', 'ctx_execute', 'ctx_batch_execute',
       'get_file_contents'
     ].includes(mcpTool);
     if (!isSearchOrReadMcp) {
-      // Pure analytical tools (such as sequentialthinking) do not consume discovery quota
+      // Analytical and execution sandbox tools (such as ctx_execute, sequentialthinking) do not consume discovery quota
       sendDecision('allow');
     }
   }
@@ -107,8 +106,8 @@ function main() {
 
   const { count } = countCurrentTurnInvestigations(transcriptPath);
 
-  // 4. HARD RULE: Investigation quota limit (2 calls per turn for Early Failure Interception)
-  const MAX_SEARCH_QUOTA = 2;
+  // 4. HARD RULE: Investigation quota limit (4 calls per turn for Early Failure Interception)
+  const MAX_SEARCH_QUOTA = 4;
 
   if (count >= MAX_SEARCH_QUOTA) {
     sendDecision(

@@ -50,8 +50,7 @@ function countCurrentTurnInvestigations(transcriptPath) {
   let count = 0;
   const searchTools = new Set(['grep_search', 'find_by_name']);
   const searchMcpTools = new Set([
-    'find_code', 'search_code', 'search_notes', 'ctx_search',
-    'ctx_execute_file', 'ctx_execute', 'ctx_batch_execute'
+    'find_code', 'search_code', 'search_notes', 'ctx_search', 'get_file_contents'
   ]);
 
   for (const step of userTurn.turnSteps) {
@@ -80,7 +79,7 @@ function countCurrentTurnInvestigations(transcriptPath) {
  * Menghitung metrik view_file pada file source code dalam turn saat ini.
  * Mengembalikan total pemanggilan, pemanggilan untuk file tertentu, dan total akumulasi baris yang dibaca.
  */
-function countCurrentTurnViewFiles(transcriptPath, targetNormalizedPath = '') {
+function countCurrentTurnViewFiles(transcriptPath, targetNormalizedPath = '', activeWorkspace = '') {
   const userTurn = getLatestUserTurn(transcriptPath);
   let count = 0;
   let specificFileCount = 0;
@@ -92,20 +91,29 @@ function countCurrentTurnViewFiles(transcriptPath, targetNormalizedPath = '') {
         if (call.name === 'view_file') {
           const args = call.args || {};
           const path = (args.AbsolutePath || args.absolutePath || '').replace(/\\/g, '/');
-          const isDocOrConfig =
-            /\.(md|mdx|txt|rst|json|ya?ml|toml|ini|env|env\.[a-z0-9_.-]+)$/i.test(path) ||
+          
+          const isConfig =
+            /\.(json|ya?ml|toml|ini|env|env\.[a-z0-9_.-]+)$/i.test(path) ||
             /\/(skills|\.agents|config|rules|hooks|builtin)\/.*$/i.test(path);
-          if (!isDocOrConfig) {
-            count++;
-            if (targetNormalizedPath && path === targetNormalizedPath) {
-              specificFileCount++;
-            }
-            if (args.StartLine !== undefined && args.EndLine !== undefined) {
-              const start = Number(args.StartLine);
-              const end = Number(args.EndLine);
-              if (!isNaN(start) && !isNaN(end) && end >= start) {
-                totalLinesRead += (end - start + 1);
-              }
+          if (isConfig) continue;
+
+          const isDoc = /\.(md|mdx|txt|rst)$/i.test(path);
+          const wsList = Array.isArray(activeWorkspace) ? activeWorkspace : (activeWorkspace ? [activeWorkspace] : []);
+          const isDocInsideWorkspace = isDoc && wsList.some(ws =>
+            path.startsWith(ws + '/') || path === ws
+          );
+          if (isDocInsideWorkspace) continue; // internal workspace docs are exempt from quotas
+
+          // Count restricted targets: source code and external docs
+          count++;
+          if (targetNormalizedPath && path === targetNormalizedPath) {
+            specificFileCount++;
+          }
+          if (args.StartLine !== undefined && args.EndLine !== undefined) {
+            const start = Number(args.StartLine);
+            const end = Number(args.EndLine);
+            if (!isNaN(start) && !isNaN(end) && end >= start) {
+              totalLinesRead += (end - start + 1);
             }
           }
         }
@@ -144,7 +152,7 @@ function saveDenialState(state) {
 /**
  * Memeriksa apakah Circuit Breaker aktif (sudah mencapai batas penolakan berulang dalam 1 turn).
  */
-function isCircuitBreakerTripped(transcriptPath, maxDenials = 2) {
+function isCircuitBreakerTripped(transcriptPath, maxDenials = 3) {
   if (!transcriptPath) return false;
   const userTurn = getLatestUserTurn(transcriptPath);
   const state = getDenialState(userTurn.stepIndex);

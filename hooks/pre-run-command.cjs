@@ -36,11 +36,11 @@ function main() {
 
   globalTranscriptPath = data.transcriptPath || '';
 
-  // 0. CIRCUIT BREAKER: Hentikan eksekusi jika sudah terjadi 2x penolakan berturut-turut dalam turn ini
-  if (globalTranscriptPath && isCircuitBreakerTripped(globalTranscriptPath, 2)) {
+  // 0. CIRCUIT BREAKER: Hentikan eksekusi jika sudah terjadi 3x penolakan berturut-turut dalam turn ini
+  if (globalTranscriptPath && isCircuitBreakerTripped(globalTranscriptPath, 3)) {
     const payload = {
       decision: 'deny',
-      reason: `[CIRCUIT BREAKER ACTIVATED] Telah terjadi 2x penolakan berturut-turut dalam giliran ini.\n` +
+      reason: `[CIRCUIT BREAKER ACTIVATED] Telah terjadi 3x penolakan berturut-turut dalam giliran ini.\n` +
         `Eksekusi tool dihentikan paksa untuk mencegah loop coba-ulang dan melindungi context window.\n` +
         `TINDAKAN WAJIB: Hentikan pemanggilan tool sekarang, laporkan progres, dan minta instruksi langsung ke pengguna.`
     };
