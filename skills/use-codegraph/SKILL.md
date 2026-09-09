@@ -21,6 +21,12 @@ version: 2.0.0
 
 ## 2. MCP TOOL PARAMETER GUARDRAILS & PAYLOAD SPECIFICATIONS
 
+> [!CAUTION]
+> **PRE-FLIGHT INDEX GATE (ATURAN HEMAT KUOTA INVESTIGASI)**:
+> Sebelum memanggil `codegraph_explore`, agen WAJIB memastikan repositori memiliki direktori `.codegraph/`.
+> - **Jika `.codegraph/` TIDAK ADA**: DILARANG KERAS memanggil `codegraph_explore` karena 100% pasti error (`No CodeGraph project is loaded for this session`) dan akan membuang 1 jatah kuota investigasi (dari kuota awal 2–3 call). Langsung lakukan fallback ke AST parser (`strata-mcp`), FTS sandbox (`ctx_search`), atau targeted `grep_search`.
+> - **Parameter Tunggal `query`**: Tool ini **HANYA** menerima `query: string`. Dilarang mengoper argumen tak dikenal seperti `file_path`, `symbol`, atau `target`.
+
 ### `codegraph_explore` Parameter Requirements
 
 | Argument | Type | Requirement | Description & Rules |

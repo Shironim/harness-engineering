@@ -35,7 +35,7 @@
   - Final status (*Success / Failed*).
   - Metric summary (*e.g.*, `45 passed, 0 failures`).
   - Specific error lines and stack traces ONLY when failures occur (*unhappy path*).
-- **Hard Quota & Anti-Looping Discovery:** Chained manual probing (such as repeatedly calling `grep_search` followed by `view_file` across multiple files) is STRICTLY PROHIBITED. Initial investigation MUST be capped at **a maximum of 2–3 planned tool calls** via the 3-Code Discovery + 1-Reasoning MCP Suite. This quota applies to the cumulative TOTAL of tools, including sandbox invocations.
+- **Hard Quota & Anti-Looping Discovery:** Chained manual probing (such as repeatedly calling `grep_search` followed by `view_file` across multiple files) is STRICTLY PROHIBITED. Initial investigation MUST be capped at **a maximum of 5 planned tool calls** via the 3-Code Discovery + 1-Reasoning MCP Suite. This quota applies to the cumulative TOTAL of tools, including sandbox invocations. If within the first 2–3 queries the target is completely unfound or ambiguous, halt and ask early rather than blind probing.
 
 - **The MCP Suite (3-Code Discovery + 1-Reasoning):**
   These tools operate as a cohesive, mutually reinforcing investigation and reasoning system:
@@ -48,13 +48,14 @@
   When a skill is triggered via user commands or becomes relevant to a task, the Agent **MUST read the relevant `SKILL.md` file on-demand** using `view_file` before execution. Do not assume or rely solely on brief descriptions; absorb constraints, workflows, and specific recipes directly from the source document.
 
 - **Anti-Micro-Scripting & Batch-First Aggregation (Strict `ctx_execute` Guardrail):**
-  1. *No Serial Script Looping:* STRICTLY PROHIBITED to call `ctx_execute` serially just to inspect file by file or small snippets of code per invocation.
-  2. *Batch-First Policy:* If a task involves investigation, comparison, or standardization across $\ge 2$ files, you MUST write **a single batch aggregation script** that reads and compares all target files simultaneously, returning a concise comparative summary matrix.
-  3. *Zero Large Output Tolerance:* Sandbox scripts are strictly forbidden from printing raw dumps (full `readFileSync`) that trigger *truncated output*. Output must be filtered inside the script to produce structured concise summaries (JSON/compact table $\le 30$ lines).
+  1. *No Serial Script Looping:* STRICTLY PROHIBITED to call `ctx_execute` serially just to inspect file by file or small snippets of code per invocation. Pemanggilan dibatasi maksimal 1–2 kali per turn (dilindungi oleh `[CONTEXT-MODE ANTI-CHAINING GUARD]`).
+  2. *Sequential-Thinking Pre-Design:* Sebelum memanggil `ctx_execute`, agen WAJIB merumuskan rancangan script batch di dalam `sequential-thinking` (memetakan seluruh file target yang dibaca simultan, filter/ekstraksi internal, dan skema JSON output $\le 30$ baris) agar tidak terjadi trial-and-error reaktif.
+  3. *Batch-First Policy:* Jika suatu tugas memerlukan penelusuran, perbandingan, atau standardisasi lintas $\ge 2$ file, tulis **satu batch script tunggal** yang memproses semua file target sekaligus dan mengembalikan matriks komparatif ringkas.
+  4. *Zero Large Output Tolerance:* Dilarang keras melakukan console.log raw dump (isi file utuh `readFileSync`) yang memicu pemotongan output ke disk (`.system_generated/.../output.txt`). Filter data di dalam runtime Bun/Node dan hasilkan summary padat ($\le 30$ baris / $< 2$ KB).
 
 - **Mechanical Slicing & Anti-Browsing Protocol (STRICT):**
   1. *Line-Zero Tolerance:* STRICTLY PROHIBITED to call `view_file` without specific target line numbers from `codegraph_explore` (CodeGraph), `find_code` (strata-mcp), or targeted grep.
-  2. *Single-Slice Rule:* Calling `view_file` is limited to **at most 1 time per file** in an editing sequence, with a narrow range ($\pm 20$ lines) immediately before calling `replace_file_content`.
+  2. *Precision Slice Rule:* Calling `view_file` is limited to **at most 2 times per file** in an editing sequence, with a narrow range ($\pm 20$–40 lines, max 80 lines per slice) immediately before calling `replace_file_content`.
   3. *Prohibition on Paging Loops:* STRICTLY PROHIBITED to perform sequential reading loops (e.g., reading lines 1–60, then 61–120, then 121–180) to circumvent line limits. Use AST parsers, CodeGraph symbol index, or targeted search to pinpoint target blocks.
 
 - **The Bookends Protocol & Batch Verification Gate (Frontend Lifecycle):**

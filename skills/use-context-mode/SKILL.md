@@ -39,7 +39,13 @@ version: 2.1.0
 
 ### ⚠️ Strict Sandbox Runtime Constraints (CRITICAL)
 
-#### 1. Prohibition on Top-Level Static ESM Imports (`import ... from ...`)
+#### 1. Anti-Bypass & Anti-Micro-Scripting Guardrail (Paling Kritis)
+- ❌ **DILARANG KERAS (Bypass Quota Abuse)**: Menggunakan `ctx_execute` berulang kali hanya untuk membaca file baris-per-baris (`fs.readFileSync().slice()`) demi mengakali quota `view_file`. Jika kuota pembacaan file habis atau diblokir hook, agen **WAJIB HALT & ASK** ke user, bukan berselancar lewat sandbox!
+- ❌ **DILARANG SERIAL SCRIPT LOOPING**: Dilarang memanggil `ctx_execute` berturut-turut untuk memeriksa file satu per satu. Hook global menerapkan `[CONTEXT-MODE ANTI-CHAINING GUARD]` dengan batas maksimal 1–2 pemanggilan per turn.
+- ✅ **WAJIB PRE-DESIGN DI SEQUENTIAL-THINKING**: Sebelum memanggil `ctx_execute`, agen WAJIB merumuskan rencana script batch di dalam `sequentialthinking` (memetakan seluruh target file, logika komparasi/filter, dan memastikan skema output padat $\le 30$ baris / $< 2$ KB).
+- ✅ **WAJIB BATCH-FIRST**: Jika perlu memeriksa atau membandingkan struktur antar-file ($\ge 2$ file), tulis **1 skrip agregasi tunggal** yang membaca seluruh target sekaligus dan kembalikan tabel/JSON ringkas (< 30 baris).
+
+#### 2. Prohibition on Top-Level Static ESM Imports (`import ... from ...`)
 Engine `context-mode` secara otomatis membungkus (*wrap*) kode JavaScript dan TypeScript ke dalam fungsi asinkron pelacak I/O/network:
 ```javascript
 ;(function(__cm_req){
@@ -58,18 +64,30 @@ Dalam sintaks JavaScript & TypeScript (Node/Bun), deklarasi statis `import ... f
   ```
 - ✅ **WAJIB (Gunakan CommonJS require, dynamic import, atau Bun native)**:
   ```javascript
-  const fs = require("fs");
-  const path = require("path");
+  const fs = require("node:fs");
+  const path = require("node:path");
   // atau dynamic import:
-  const fs = await import("fs");
+  const fs = await import("node:fs");
   // atau Bun native API:
   const content = await Bun.file("path/to/file").text();
   ```
 
-#### 2. Dilarang Menukar Parameter `code` dengan `command`
+#### 3. Jebakan Resolusi Modul Proyek (`process.cwd()` vs `__dirname` di `/tmp/`)
+Skrip `ctx_execute` disimpan dan dijalankan di direktori sementara (`/tmp/.ctx-mode-XXXX/script.ts`).
+- Fungsi I/O bawaan seperti `fs.readFileSync('src/core/types.ts')` **berhasil** karena berbasis `process.cwd()`.
+- Namun `require('./src/core/...')` **PASTI GAGAL** (`Cannot find module from /tmp/...`) karena `require()` menggunakan resolusi direktori relatif terhadap `/tmp/`!
+- ✅ **WAJIB gunakan `path.resolve(process.cwd(), ...)` saat mengimpor modul proyek**:
+  ```javascript
+  const path = require('node:path');
+  const rootDir = process.cwd();
+  // Import modul codebase dengan path absolut aman:
+  const { FingerprintNormalizer } = require(path.resolve(rootDir, 'src/core/fingerprint/normalizer'));
+  ```
+
+#### 4. Dilarang Menukar Parameter `code` dengan `command`
 `ctx_execute` adalah engine sandbox polyglot, **bukan** terminal command runner:
 - ❌ **SALAH**: `{"Arguments": {"command": "bun -e '...'"}}`
-- ✅ **BENAR**: `{"Arguments": {"language": "javascript", "code": "const fs = require('fs'); ..."}}`
+- ✅ **BENAR**: `{"Arguments": {"language": "javascript", "code": "const fs = require('node:fs'); ..."}}`
 
 ### Valid Payload Examples
 
@@ -265,6 +283,9 @@ Dalam sintaks JavaScript & TypeScript (Node/Bun), deklarasi statis `import ... f
 
 ## 6. DON'T DO / ANTI-PATTERNS (Negative Cases)
 
+- **No File Reader Bypass**: NEVER use `ctx_execute` merely as a loop of `fs.readFileSync` to evade `view_file` quota limits. If reading quota is exhausted, stop and ask the user directly.
+- **No Serial Micro-Scripting**: NEVER invoke `ctx_execute` repeatedly in a row to inspect files one by one. Use a single batch-first script for $\ge 2$ files.
+- **No Relative `require('./...')` for Project Modules**: In `ctx_execute`, NEVER write `require('./src/...')` because script runs in `/tmp/`. Always use `require(path.resolve(process.cwd(), 'src/...'))`.
 - **No Static ESM Imports in JS/TS**: NEVER write `import ... from "..."` inside `code` for `ctx_execute` or `ctx_execute_file`. `context-mode` wraps code in `async function __cm_main()`, which forbids top-level ESM imports and causes `error: Unexpected <module>`. Always use CommonJS `require(...)`, dynamic `await import(...)`, or `Bun.file(...)`.
 - **No `command` Parameter in `ctx_execute`**: NEVER pass `{"command": "..."}` to `ctx_execute`. `ctx_execute` requires `{"language": "...", "code": "..."}`.
 - **No Omitted `queries` on Batch Execution**: NEVER omit `queries` in `ctx_batch_execute`. It is a **REQUIRED** parameter.
@@ -272,4 +293,5 @@ Dalam sintaks JavaScript & TypeScript (Node/Bun), deklarasi statis `import ... f
 - **No Web Fetch Token Flood**: Do NOT fetch large web pages directly into context. Use `ctx_fetch_and_index` and query snippets via `ctx_search`.
 - **No File Code Edits in Sandbox**: Do NOT use `ctx_execute` to modify code files. Use native file editing tools instead.
 - **No Missing `intent` on Big Outputs**: If script output exceeds 5KB, always supply the `intent` string parameter to enable auto-indexing.
+
 

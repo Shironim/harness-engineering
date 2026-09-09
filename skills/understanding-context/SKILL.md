@@ -33,26 +33,35 @@ Gunakan skill ini saat:
 
 ### Mental Model: Cognitive Division of Labor (Why Choose Which Tool)
 
-Memahami alasan fundamental di balik pemilihan tool mencegah agen dari salah arah (*misdirection*) dan pembakaran token sia-sia:
+Memahami alasan fundamental di balik pemilihan tool mencegah agen dari salah arah (*misdirection*) dan pembakaran token sia-sia.
 
-| Tool MCP | Karakteristik Utama & "The WHY" | Kapan WAJIB Dipilih | Titik Lemah / Kapan JANGAN Dipilih |
-|---|---|---|---|
-| `sequential-thinking` | **Meta-Kognisi & Arsitek Strategi.** Mengapa: Tanpa hipotesis terstruktur, agen mudah terjebak trial-and-error acak. Mengunci kuota tool call dan mengevaluasi Two-Way Door vs One-Way Door. | Awal setiap tugas kompleks, sebelum merombak arsitektur, atau saat menghadapi bukti anomali baru. | Jangan gunakan untuk membaca isi kode atau mengambil data mentah. |
-| `strata-mcp` | **Mata Bedah Dokumen Campuran (Mixed-Document / SFC / AST).** Mengapa: String search dan flat parser buta terhadap batas antara template HTML/JSX dan script. Strata menghubungkan event binding, hierarki upward/downward, dan props/emits tanpa polusi HTML. | Memahami komponen UI (Vue, Astro, React/TSX), audit event handlers, trace state composables/stores, dan mendeteksi dead UI code. | Jangan gunakan untuk melacak query database backend, ORM, atau controller murni non-UI. |
-| `codegraph` | **Teropong Lintas-Batas Simbol & Call Graph.** Mengapa: Memetakan relasi simbol multi-file secara horizontal dan vertikal di lapisan backend/service/logic. | Melacak incoming callers, call hierarchy backend (Controller -> Service -> Repository -> Model), dan blast radius fungsi internal. | Jangan gunakan untuk membedah event template UI atau struktur reaktivitas komponen frontend. |
-| `context-mode` | **Tameng Token & Sandbox Komputasi Lokal.** Mengapa: Pembacaan banyak file atau log besar di prompt LLM menyebabkan context bloat dan halusinasi. `ctx_execute` menyaring data di memori runtime Bun/Node dan mengembalikan intisari ringkas (<= 40 baris). | Membandingkan pola di belasan file sekaligus, memfilter git diff raksasa, parsing log ukuran megabyte, atau audit regex massal. | Jangan gunakan jika data yang dibutuhkan sudah presisi dan bisa didapat dari 1 pemanggilan AST/graph. |
+> [!IMPORTANT]
+> **Wajib Membaca Skill `use-*` (On-Demand Skill Loading):**
+> Sesuai protokol di `AGENTS.md`, sebelum atau saat menggunakan salah satu dari 4 MCP di bawah, agen **WAJIB membaca file `SKILL.md` dari skill terkait** yang tersedia pada environment/projek saat ini:
+> - Skill `use-sequential-thinking` — Dynamic iterative reasoning & hypothesis mapping.
+> - Skill `use-strata` — Slicing AST frontend, component tree, dan trace state.
+> - Skill `use-codegraph` — Call graph, caller/callee, dan multi-file symbol dependency.
+> - Skill `use-context-mode` — Sandbox batch processing, FTS5 search, dan mitigasi context bloat.
+
+| Tool MCP | Skill Panduan Wajib | Karakteristik Utama & "The WHY" | Kapan WAJIB Dipilih | Titik Lemah / Kapan JANGAN Dipilih |
+|---|---|---|---|---|
+| `sequential-thinking` | `use-sequential-thinking` | **Meta-Kognisi & Arsitek Strategi.** Mengapa: Tanpa hipotesis terstruktur, agen mudah terjebak trial-and-error acak. Mengunci kuota tool call dan mengevaluasi Two-Way Door vs One-Way Door. | Awal setiap tugas kompleks, sebelum merombak arsitektur, atau saat menghadapi bukti anomali baru. | Jangan gunakan untuk membaca isi kode atau mengambil data mentah. |
+| `strata-mcp` | `use-strata` | **Mata Bedah Dokumen Campuran (Mixed-Document / SFC / AST).** Mengapa: String search dan flat parser buta terhadap batas antara template HTML/JSX dan script. Strata menghubungkan event binding, hierarki upward/downward, dan props/emits tanpa polusi HTML. | Memahami komponen UI (Vue, Astro, React/TSX), audit event handlers, trace state composables/stores, dan mendeteksi dead UI code. | Jangan gunakan untuk melacak query database backend, ORM, atau controller murni non-UI. |
+| `codegraph` | `use-codegraph` | **Teropong Lintas-Batas Simbol & Call Graph.** Mengapa: Memetakan relasi simbol multi-file secara horizontal dan vertikal di lapisan backend/service/logic. | Melacak incoming callers, call hierarchy backend (Controller -> Service -> Repository -> Model), dan blast radius fungsi internal. | Jangan gunakan untuk membedah event template UI atau struktur reaktivitas komponen frontend. |
+| `context-mode` | `use-context-mode` | **Tameng Token & Sandbox Komputasi Lokal.** Mengapa: Pembacaan banyak file atau log besar di prompt LLM menyebabkan context bloat dan halusinasi. `ctx_execute` menyaring data di memori runtime Bun/Node dan mengembalikan intisari ringkas (<= 40 baris). | Membandingkan pola di belasan file sekaligus, memfilter git diff raksasa, parsing log ukuran megabyte, atau audit regex massal. | Jangan gunakan jika data yang dibutuhkan sudah presisi dan bisa didapat dari 1 pemanggilan AST/graph. |
 
 ### Rantai Sinergi Lintas-Lapisan (Cross-Layer Feedback Loop)
 Alur investigasi ideal untuk tugas fitur atau refactoring multi-layer:
-1. **Call 1 (`sequential-thinking`):** Rumuskan hipotesis, identifikasi apakah perubahan adalah One-Way Door, dan pisahkan boundary UI vs Backend vs Data.
-2. **Call 2 (`strata-mcp`):** Bedah kontrak UI, temukan rute/endpoint yang dipanggil komponen, dan petakan upward component tree.
-3. **Call 3 (`codegraph`):** Lanjutkan dari endpoint UI langsung ke controller/service backend dan telusuri dampak ke database query.
-4. **Opsional (`context-mode`):** Jika ditemukan belasan file konsumen sejenis, validasi keseragaman pola di sandbox tanpa dump file.
+1. **Call 1 (`sequential-thinking`):** Rumuskan hipotesis, identifikasi apakah perubahan adalah One-Way Door, dan pisahkan boundary UI vs Backend vs Data. (Rujuk skill `use-sequential-thinking`)
+2. **Call 2 (`strata-mcp`):** Bedah kontrak UI, temukan rute/endpoint yang dipanggil komponen, dan petakan upward component tree. (Rujuk skill `use-strata`)
+3. **Call 3 (`codegraph`):** Lanjutkan dari endpoint UI langsung ke controller/service backend dan telusuri dampak ke database query. (Rujuk skill `use-codegraph`)
+4. **Opsional (`context-mode`):** Jika ditemukan belasan file konsumen sejenis, validasi keseragaman pola di sandbox tanpa dump file. (Rujuk skill `use-context-mode`)
 5. **Sintesis Akhir (`sequential-thinking`):** Rumuskan rencana defensif terverifikasi sebelum menyentuh kode.
 
 ---
 
 ### Fase 1: Cognitive Planning via `sequential-thinking` (Call 1)
+- Baca skill `use-sequential-thinking` untuk memahami parameter wajib (`thought`, `thoughtNumber`, `totalThoughts`, `nextThoughtNeeded`).
 - Rumuskan hipotesis & identifikasi kebutuhan konteks yang dicari.
 - Tentukan domain target:
   - **Frontend UI / Komponen:** Template, props, events, reaktivitas.
@@ -61,13 +70,13 @@ Alur investigasi ideal untuk tugas fitur atau refactoring multi-layer:
 - Rencanakan rute investigasi terukur yang tuntas dalam 1–2 tool call berikutnya.
 
 ### Fase 2: Architectural Routing & Deep Discovery (Call 2–3)
-Pilih tool MCP yang tepat sesuai domain target tanpa melakukan browsing acak:
+Pilih tool MCP yang tepat sesuai domain target tanpa melakukan browsing acak. **Wajib baca skill panduannya terlebih dahulu:**
 
-| Domain Sasaran | Tool Utama | Metode Penyelidikan |
-|---|---|---|
-| **Frontend, Vue/Astro/TS AST, Props, Komponen** | `strata-mcp` | Gunakan `inspect_component` untuk kontrak props/emits/slicing fungsi spesifik; gunakan `get_component_tree` untuk hirarki rute/komponen; gunakan `trace_state` untuk dampak store/composable. |
-| **Backend, Simbol Multi-File, Call Graph** | `codegraph` | Gunakan `codegraph_explore` untuk memetakan incoming/outgoing callers, blast radius, dan alur relasi antar-file dalam satu pemanggilan. |
-| **Bulk Scan, Agregasi Multi-File, Audit Data** | `context-mode` | Gunakan `ctx_execute` (Bun/Node sandbox) untuk menyaring ribuan baris data/file menjadi intisari ringkas tanpa mencemari token memori. |
+| Domain Sasaran | Tool Utama | Skill Panduan Wajib | Metode Penyelidikan |
+|---|---|---|---|
+| **Frontend, Vue/Astro/TS AST, Props, Komponen** | `strata-mcp` | `use-strata` | Gunakan `inspect_component` untuk kontrak props/emits/slicing fungsi spesifik; gunakan `get_component_tree` untuk hirarki rute/komponen; gunakan `trace_state` untuk dampak store/composable. |
+| **Backend, Simbol Multi-File, Call Graph** | `codegraph` | `use-codegraph` | Gunakan `codegraph_explore` untuk memetakan incoming/outgoing callers, blast radius, dan alur relasi antar-file dalam satu pemanggilan. |
+| **Bulk Scan, Agregasi Multi-File, Audit Data** | `context-mode` | `use-context-mode` | Gunakan `ctx_execute` (Bun/Node sandbox) untuk menyaring ribuan baris data/file menjadi intisari ringkas tanpa mencemari token memori. |
 
 ### Fase 3: Sintesis Pemahaman & Tunggu Konfirmasi (Read-Only)
 - Evaluasi temuan dari tool MCP.

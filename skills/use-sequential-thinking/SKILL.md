@@ -20,6 +20,11 @@ description: Dynamic iterative reasoning engine for breaking down complex proble
 
 ## MCP TOOL PARAMETER SPECIFICATIONS & PAYLOAD EXAMPLE
 
+> [!CAUTION]
+> **FATAL SCHEMA RULE**: Argumen `nextThoughtNeeded: boolean` bersifat **MANDATORI MUTLAK** dalam skema Zod `@modelcontextprotocol/server-sequential-thinking`. Jika dihilangkan atau bernilai `undefined`, pemanggilan tool akan **LANGSUNG GAGAL** dengan `MCP error -32602: Invalid input at nextThoughtNeeded`.
+> - Gunakan `nextThoughtNeeded: true` untuk **seluruh** langkah penalaran, analisis, dan perumusan hipotesis berjalan.
+> - Gunakan `nextThoughtNeeded: false` **HANYA** pada thought terakhir ketika kesimpulan arsitektur final telah terbukti dan terverifikasi.
+
 ### Parameter Guardrails
 
 | Argument | Type | Requirement | Description & Rules |
@@ -62,7 +67,14 @@ description: Dynamic iterative reasoning engine for breaking down complex proble
    - **Step 3 (Thought 2 - Revision)**: Revisi hipotesis berdasarkan bukti nyata dari sandbox/codegraph (`isRevision: true`).
    - **Step 4 (Final Thought)**: Kunci kesimpulan akhir (`nextThoughtNeeded: false`).
 
-2. **ADR Persistence**:
+2. **Optimasi Sinergi Sequential Thinking dengan `context-mode` (Batch-First Pre-Design):**
+   - **Perencanaan di Thought**: Sebelum memanggil `ctx_execute`, `sequentialthinking` WAJIB merumuskan arsitektur script batch secara menyeluruh:
+     - Daftar seluruh file target yang dibaca bersamaan (`fs.readFileSync` simultan).
+     - Logika filter & reduksi data di dalam sandbox (regex, slice, aggregasi).
+     - Format return summary JSON/tabel padat ($\le 30$ baris / $< 2$ KB) agar tidak terpotong ke disk (`.system_generated/.../output.txt`).
+   - **Anti-Chaining Awareness**: Hook `pre-search-quota.cjs` membatasi pemanggilan `context-mode` maksimal 1–2 kali per turn (`[CONTEXT-MODE ANTI-CHAINING GUARD]`). Kegagalan merancang batch script akan memicu penolakan dini.
+
+3. **ADR Persistence**:
    Setiap kali pemikiran bertahap mencapai kesimpulan arsitektur penting, simpan ke `basic-memory` (`write_note`) sebagai keputusan permanen proyek.
 
 ---
@@ -70,6 +82,8 @@ description: Dynamic iterative reasoning engine for breaking down complex proble
 ## 5. DON'T DO / ANTI-PATTERNS (Negative Cases)
 
 - **Never Omit nextThoughtNeeded**: In `@modelcontextprotocol/server-sequential-thinking`, `nextThoughtNeeded` is STRICTLY REQUIRED by Zod schema. Omitting it causes `MCP error -32602: Invalid input at nextThoughtNeeded`. ALWAYS pass `nextThoughtNeeded: true` (or `false` when finished).
+- **No Chained Context-Mode Looping**: DILARANG KERAS memanggil `ctx_execute` berkali-kali secara berurutan untuk membaca file satu per satu atau mengejar file output disk. Formulasikan 1 script batch komprehensif di dalam thought sebelum memanggil tool.
+- **No Raw Byte Dumping in Sandbox**: Jangan pernah membiarkan script sandbox mencetak isi file mentah tanpa filter ke `console.log`.
 - **No Premature Termination**: Do NOT set `nextThoughtNeeded: false` while unverified assumptions remain.
 - **No Rigid Thought Total**: Do NOT force analysis to fit initial `totalThoughts` estimate if complexity increases.
 - **No Skipping Verification Step**: Never jump directly from initial hypothesis to final conclusion without a dedicated verification thought step.
