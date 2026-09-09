@@ -1,45 +1,59 @@
 const fs = require('fs');
+const crypto = require('crypto');
 
 /**
- * Membaca N baris terakhir dari file transcript.
- */
-function readLastLines(filePath, maxLines = 150) {
-  try {
-    if (!fs.existsSync(filePath)) return [];
-    const content = fs.readFileSync(filePath, 'utf-8');
-    const lines = content.trim().split('\n');
-    return lines.slice(-maxLines);
-  } catch (err) {
-    return [];
-  }
-}
-
-/**
- * Mengambil turn interaksi terbaru dari user beserta step-step setelahnya.
+ * Mengambil turn interaksi terbaru dari user beserta step-step setelahnya secara aman.
+ * Menelusuri transkrip dari baris terakhir untuk menemukan USER_INPUT tanpa batas baris kaku.
  */
 function getLatestUserTurn(transcriptPath) {
-  if (!transcriptPath) return { stepIndex: 0, content: '', turnSteps: [] };
-
-  const lines = readLastLines(transcriptPath, 150);
-  const steps = [];
-  for (const line of lines) {
-    if (!line.trim()) continue;
-    try {
-      steps.push(JSON.parse(line));
-    } catch (_) {}
+  if (!transcriptPath || !fs.existsSync(transcriptPath)) {
+    return { stepIndex: 0, content: '', turnSteps: [] };
   }
 
-  for (let i = steps.length - 1; i >= 0; i--) {
-    if (steps[i].type === 'USER_INPUT') {
-      return {
-        stepIndex: steps[i].step_index,
-        content: steps[i].content || '',
-        turnSteps: steps.slice(i + 1)
-      };
+  try {
+    const content = fs.readFileSync(transcriptPath, 'utf-8');
+    const lines = content.trim().split('\n');
+    if (lines.length === 0) return { stepIndex: 0, content: '', turnSteps: [] };
+
+    let userIndex = -1;
+    let userStep = null;
+
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i].trim();
+      if (!line) continue;
+      if (line.includes('"USER_INPUT"') || line.includes('"type":"USER_INPUT"')) {
+        try {
+          const parsed = JSON.parse(line);
+          if (parsed.type === 'USER_INPUT') {
+            userIndex = i;
+            userStep = parsed;
+            break;
+          }
+        } catch (_) {}
+      }
     }
-  }
 
-  return { stepIndex: 0, content: '', turnSteps: steps };
+    if (userIndex === -1 || !userStep) {
+      return { stepIndex: 0, content: '', turnSteps: [] };
+    }
+
+    const turnSteps = [];
+    for (let i = userIndex + 1; i < lines.length; i++) {
+      const line = lines[i].trim();
+      if (!line) continue;
+      try {
+        turnSteps.push(JSON.parse(line));
+      } catch (_) {}
+    }
+
+    return {
+      stepIndex: userStep.step_index,
+      content: userStep.content || '',
+      turnSteps
+    };
+  } catch (_) {
+    return { stepIndex: 0, content: '', turnSteps: [] };
+  }
 }
 
 /**
@@ -93,7 +107,9 @@ function countCurrentTurnViewFiles(transcriptPath, targetNormalizedPath = '', ac
           const path = (args.AbsolutePath || args.absolutePath || '').replace(/\\/g, '/');
           
           const isConfig =
-            /\.(json|ya?ml|toml|ini|env|env\.[a-z0-9_.-]+)$/i.test(path) ||
+            /\/mcp\/.*\.json$/i.test(path) ||
+            /\.(ya?ml|toml|ini|env|env\.[a-z0-9_.-]+)$/i.test(path) ||
+            /(package|composer|tsconfig|vite\.config|webpack\.config|tailwind\.config)\.(json|js|ts|cjs|mjs)$/i.test(path) ||
             /\/(skills|\.agents|config|rules|hooks|builtin)\/.*$/i.test(path);
           if (isConfig) continue;
 
@@ -129,12 +145,17 @@ function countCurrentTurnViewFiles(transcriptPath, targetNormalizedPath = '', ac
   };
 }
 
-const DENIAL_STATE_FILE = '/tmp/agy_turn_denials.json';
+function getDenialStateFile(transcriptPath) {
+  if (!transcriptPath) return '/tmp/agy_turn_denials_default.json';
+  const hash = crypto.createHash('md5').update(transcriptPath).digest('hex').slice(0, 16);
+  return `/tmp/agy_turn_denials_${hash}.json`;
+}
 
-function getDenialState(userStepIndex) {
+function getDenialState(transcriptPath, userStepIndex) {
+  const filePath = getDenialStateFile(transcriptPath);
   try {
-    if (fs.existsSync(DENIAL_STATE_FILE)) {
-      const data = JSON.parse(fs.readFileSync(DENIAL_STATE_FILE, 'utf-8'));
+    if (fs.existsSync(filePath)) {
+      const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
       if (data.userStepIndex === userStepIndex) {
         return data;
       }
@@ -143,9 +164,10 @@ function getDenialState(userStepIndex) {
   return { userStepIndex, denyCount: 0 };
 }
 
-function saveDenialState(state) {
+function saveDenialState(transcriptPath, state) {
+  const filePath = getDenialStateFile(transcriptPath);
   try {
-    fs.writeFileSync(DENIAL_STATE_FILE, JSON.stringify(state), 'utf-8');
+    fs.writeFileSync(filePath, JSON.stringify(state), 'utf-8');
   } catch (_) {}
 }
 
@@ -155,7 +177,7 @@ function saveDenialState(state) {
 function isCircuitBreakerTripped(transcriptPath, maxDenials = 3) {
   if (!transcriptPath) return false;
   const userTurn = getLatestUserTurn(transcriptPath);
-  const state = getDenialState(userTurn.stepIndex);
+  const state = getDenialState(transcriptPath, userTurn.stepIndex);
   return state.denyCount >= maxDenials;
 }
 
@@ -165,16 +187,45 @@ function isCircuitBreakerTripped(transcriptPath, maxDenials = 3) {
 function recordTurnDenial(transcriptPath) {
   if (!transcriptPath) return 1;
   const userTurn = getLatestUserTurn(transcriptPath);
-  const state = getDenialState(userTurn.stepIndex);
+  const state = getDenialState(transcriptPath, userTurn.stepIndex);
   state.denyCount = (state.denyCount || 0) + 1;
-  saveDenialState(state);
+  saveDenialState(transcriptPath, state);
   return state.denyCount;
+}
+
+/**
+ * Menghitung berapa kali context-mode (ctx_execute) dipanggil dalam turn user saat ini.
+ */
+function countCurrentTurnContextMode(transcriptPath) {
+  const userTurn = getLatestUserTurn(transcriptPath);
+  let count = 0;
+
+  for (const step of userTurn.turnSteps) {
+    if (step.tool_calls && Array.isArray(step.tool_calls)) {
+      for (const call of step.tool_calls) {
+        if (call.name === 'call_mcp_tool') {
+          const args = call.args || {};
+          const server = (args.ServerName || '').toLowerCase();
+          const tool = (args.ToolName || '').toLowerCase();
+          if (server === 'context-mode' || tool.startsWith('ctx_')) {
+            count++;
+          }
+        }
+      }
+    }
+  }
+
+  return {
+    count,
+    latestUserPrompt: userTurn.content
+  };
 }
 
 module.exports = {
   getLatestUserTurn,
   countCurrentTurnInvestigations,
   countCurrentTurnViewFiles,
+  countCurrentTurnContextMode,
   isCircuitBreakerTripped,
   recordTurnDenial
 };

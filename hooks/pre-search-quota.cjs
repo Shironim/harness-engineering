@@ -1,6 +1,10 @@
 const fs = require('fs');
-const path = require('path');
-const { countCurrentTurnInvestigations, isCircuitBreakerTripped, recordTurnDenial } = require('./lib/session-state.cjs');
+const {
+  countCurrentTurnInvestigations,
+  countCurrentTurnContextMode,
+  isCircuitBreakerTripped,
+  recordTurnDenial
+} = require('./lib/session-state.cjs');
 
 function readStdin() {
   try {
@@ -70,15 +74,36 @@ function main() {
     }
   }
 
-  // 2. HARD RULE: Filter MCP tools that function as discovery, search, or file-reading sandboxes
+  // 2. HARD RULE: Guard context-mode against serial micro-scripting loops & quota bypass
   if (toolName === 'call_mcp_tool') {
-    const mcpTool = args.ToolName || '';
+    const serverName = (args.ServerName || '').toLowerCase();
+    const mcpTool = (args.ToolName || '').toLowerCase();
+
+    if (serverName === 'context-mode' || mcpTool.startsWith('ctx_')) {
+      const MAX_CTX_MODE_QUOTA = 3;
+      const { count: ctxCount } = countCurrentTurnContextMode(globalTranscriptPath);
+
+      if (ctxCount >= MAX_CTX_MODE_QUOTA) {
+        sendDecision(
+          'deny',
+          `[CONTEXT-MODE ANTI-CHAINING GUARD] Pemanggilan context-mode (${args.ToolName}) telah mencapai batas (${MAX_CTX_MODE_QUOTA} calls) dalam giliran ini!\n` +
+          `Dilarang memanggil script sandbox secara serial untuk mengintip file sedikit demi sedikit (serial micro-scripting loop).\n\n` +
+          `PANDUAN OPTIMASI UNTUK SEQUENTIAL-THINKING:\n` +
+          `1. Hentikan eksekusi script serial sekarang. Beralih ke sequentialthinking untuk merancang 'Batch-First Aggregation Script'.\n` +
+          `2. BATCH-FIRST: Baca dan bandingkan seluruh target file sekaligus dalam SATU script (fs.readFileSync simultan).\n` +
+          `3. STRICT FILTERING: DILARANG console.log raw dump (> 30 baris / > 2 KB) yang memicu pemotongan output ke disk (.system_generated/.../output.txt).\n` +
+          `4. STRUKTUR RINGKAS: Kembalikan JSON terstruktur ringkas (<= 30 baris) berisi matriks perbandingan, daftar simbol, atau baris kunci.\n` +
+          `5. STOP & ASK EARLY: Jika target pencarian tetap tidak ditemukan atau ambigu, hentikan probing dan tanyakan langsung ke pengguna.`
+        );
+      }
+    }
+
     const isSearchOrReadMcp = [
       'find_code', 'search_code', 'search_notes', 'ctx_search',
       'get_file_contents'
-    ].includes(mcpTool);
-    if (!isSearchOrReadMcp) {
-      // Analytical and execution sandbox tools (such as ctx_execute, sequentialthinking) do not consume discovery quota
+    ].includes(args.ToolName || '');
+    if (!isSearchOrReadMcp && !mcpTool.startsWith('ctx_')) {
+      // Analytical and non-search MCP tools (such as sequentialthinking) do not consume discovery quota
       sendDecision('allow');
     }
   }
@@ -106,8 +131,8 @@ function main() {
 
   const { count } = countCurrentTurnInvestigations(transcriptPath);
 
-  // 4. HARD RULE: Investigation quota limit (4 calls per turn for Early Failure Interception)
-  const MAX_SEARCH_QUOTA = 4;
+  // 4. HARD RULE: Investigation quota limit (10 calls per turn for Early Failure Interception)
+  const MAX_SEARCH_QUOTA = 10;
 
   if (count >= MAX_SEARCH_QUOTA) {
     sendDecision(

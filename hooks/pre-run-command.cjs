@@ -98,45 +98,56 @@ function main() {
     );
   }
 
-  // 2. HARD RULE: Heavy or potentially destructive command patterns
-  const heavyPatterns = [
-    /\b(bun|npm|pnpm|yarn)\s+test\b/i,
-    /\b(vitest|jest|phpunit|artisan\s+test)\b/i,
-    /\b(bun|npm|pnpm|yarn)(\s+run)?\s+build\b/i,
-    /\bgit\s+(push|reset\s+--hard|clean\s+-[a-zA-Z]*f)\b/i,
-    /\b(npm|bun|pnpm|yarn)\s+(install|add)\b/i,
-    /\bcomposer\s+(require|install)\b/i
+  // 2. HARD RULE: Heavy or potentially destructive command patterns (Category-Based)
+  const heavyCategories = [
+    {
+      category: 'Test Execution',
+      pattern: /\b((bun|npm|pnpm|yarn)\s+test|(vitest|jest|phpunit|artisan\s+test))\b/i,
+      keywords: ['test', 'uji', 'run', 'jalankan', 'eksekusi'],
+      negationRegex: /\b(jangan|tidak|nggak|bukan|stop|no|don't|dont|not|never|pause|skip|hold|tahan|pending|batalkan|cancel)\s+(\w+\s+){0,3}(test|uji|jalankan|run)\b/i
+    },
+    {
+      category: 'Project Build',
+      pattern: /\b(bun|npm|pnpm|yarn)(\s+run)?\s+build\b/i,
+      keywords: ['build', 'compile', 'kompilasi', 'jalankan', 'run'],
+      negationRegex: /\b(jangan|tidak|nggak|bukan|stop|no|don't|dont|not|never|pause|skip|hold|tahan|pending|batalkan|cancel)\s+(\w+\s+){0,3}(build|compile)\b/i
+    },
+    {
+      category: 'Git Destructive Action',
+      pattern: /\bgit\s+(push|reset\s+--hard|clean\s+-[a-zA-Z]*f)\b/i,
+      keywords: ['push', 'reset', 'clean'],
+      negationRegex: /\b(jangan|tidak|nggak|bukan|stop|no|don't|dont|not|never|pause|skip|hold|tahan|pending|batalkan|cancel)\s+(\w+\s+){0,3}(push|reset|clean)\b/i
+    },
+    {
+      category: 'Dependency Management',
+      pattern: /\b((npm|bun|pnpm|yarn)\s+(install|add)|composer\s+(require|install))\b/i,
+      keywords: ['install', 'add', 'pasang', 'setup', 'unduh', 'require'],
+      negationRegex: /\b(jangan|tidak|nggak|bukan|stop|no|don't|dont|not|never|pause|skip|hold|tahan|pending|batalkan|cancel)\s+(\w+\s+){0,3}(install|add|pasang|setup)\b/i
+    }
   ];
 
-  const isHeavyCommand = heavyPatterns.some(pattern => pattern.test(commandLine));
+  const matchedCategories = heavyCategories.filter(cat => cat.pattern.test(commandLine));
 
-  if (!isHeavyCommand) {
+  if (matchedCategories.length === 0) {
     sendDecision('allow');
   }
 
-  // 3. HARD RULE: Consent verification with semantic negation detection
+  // 3. HARD RULE: Category-based consent verification with semantic negation detection
   const transcriptPath = data.transcriptPath || '';
   const { content: userPrompt } = getLatestUserTurn(transcriptPath);
 
-  const permissionKeywords = [
-    'test', 'build', 'jalankan', 'uji', 'run', 'eksekusi', 
-    'install', 'pasang', 'push', 'reset', 'clean', 'lanjutkan', 
-    'kerjakan', 'buat', 'setup'
-  ];
+  for (const cat of matchedCategories) {
+    const regexPerm = new RegExp(`\\b(${cat.keywords.join('|')})\\b`, 'i');
+    const hasKeyword = regexPerm.test(userPrompt);
+    const isExplicitlyForbidden = cat.negationRegex.test(userPrompt);
 
-  const regexPerm = new RegExp(`\\b(${permissionKeywords.join('|')})\\b`, 'i');
-  const hasKeyword = regexPerm.test(userPrompt);
-
-  // Check for negation prefixes before action keywords (e.g. "don't build", "jangan ditest", "hold execution")
-  const negationRegex = /\b(jangan|tidak|nggak|bukan|stop|no|don't|dont|not|never|pause|skip|hold|tahan|pending|batalkan|cancel)\s+(\w+\s+){0,3}(test|build|jalankan|run|push|install|reset|eksekusi)\b/i;
-  const isExplicitlyForbidden = negationRegex.test(userPrompt);
-
-  if (!hasKeyword || isExplicitlyForbidden) {
-    sendDecision(
-      'force_ask',
-      `[COMMAND GATEKEEPER] Heavy or destructive command detected:\n\`${commandLine}\`\n` +
-      `Explicit affirmative user consent was not found in the latest message (or a negation was detected). Explicit user confirmation is required to proceed.`
-    );
+    if (!hasKeyword || isExplicitlyForbidden) {
+      sendDecision(
+        'force_ask',
+        `[COMMAND GATEKEEPER] Heavy or destructive command detected (${cat.category}):\n\`${commandLine}\`\n` +
+        `Explicit affirmative user consent for this category was not found in the latest message (or a negation was detected). Explicit user confirmation is required to proceed.`
+      );
+    }
   }
 
   sendDecision('allow');

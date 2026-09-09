@@ -95,7 +95,7 @@ function main() {
     const transcriptPath = data.transcriptPath || '';
     if (transcriptPath) {
       const { count, specificFileCount, totalLinesRead } = countCurrentTurnViewFiles(transcriptPath, normalizedPath, activeWorkspaces);
-      const MAX_VIEW_QUOTA = 3; // Maksimal 3 pemanggilan view_file restricted per turn
+      const MAX_VIEW_QUOTA = 8; // Maksimal 8 pemanggilan view_file restricted per turn
 
       if (count >= MAX_VIEW_QUOTA) {
         sendDecision(
@@ -112,7 +112,7 @@ function main() {
       }
 
       // 2b. Anti-Slicing Loop: Mencegah pembacaan berkali-kali pada file yang sama (chunking bypass)
-      if (specificFileCount >= 2) {
+      if (specificFileCount >= 4) {
         sendDecision(
           'deny',
           `[SLICING EROSION GUARD] File '${normalizedPath.split('/').pop()}' telah dibaca ${specificFileCount} kali dalam giliran ini.\n` +
@@ -121,12 +121,12 @@ function main() {
         );
       }
 
-      // 2c. Cumulative Lines Quota: Maksimal akumulasi 150 baris per turn
+      // 2c. Cumulative Lines Quota: Maksimal akumulasi 2000 baris per turn
       const currentSpan = (startLine !== undefined && endLine !== undefined) ? (endLine - startLine + 1) : 0;
-      if (totalLinesRead + currentSpan > 150) {
+      if (totalLinesRead + currentSpan > 2000) {
         sendDecision(
           'deny',
-          `[CUMULATIVE READ GUARD] Total baris yang dibaca giliran ini (${totalLinesRead + currentSpan} baris) melebihi batas 150 baris.\n` +
+          `[CUMULATIVE READ GUARD] Total baris yang dibaca giliran ini (${totalLinesRead + currentSpan} baris) melebihi batas 2000 baris.\n` +
           `Hentikan pembacaan file mentah. Gunakan tool terarah atau konsultasikan ke user.`
         );
       }
@@ -137,20 +137,20 @@ function main() {
       sendDecision(
         'deny',
         `[GUARDRAIL HARD BLOCK] Membaca seluruh file mentah (${normalizedPath.split('/').pop()}) tanpa batas baris dilarang keras.\n` +
-        (isExternalDoc ? `Dokumen di luar workspace wajib dipotong menggunakan StartLine & EndLine (<= 80 baris).\n` : '') +
+        (isExternalDoc ? `Dokumen di luar workspace wajib dipotong menggunakan StartLine & EndLine (<= 200 baris).\n` : '') +
         `RUTE RESMI:\n` +
         `• Tentukan StartLine & EndLine sempit (±20-40 baris) di sekitar blok target.\n` +
         `• Untuk kode frontend, gunakan strata-mcp:inspect_component. Untuk backend, gunakan codegraph.`
       );
     }
 
-    // 2e. Span Limit Prohibition: Membaca potongan melebihi 80 baris
+    // 2e. Span Limit Prohibition: Membaca potongan melebihi 200 baris
     if (startLine !== undefined && endLine !== undefined) {
       const lineSpan = endLine - startLine + 1;
-      if (lineSpan > 80) {
+      if (lineSpan > 200) {
         sendDecision(
           'deny',
-          `[GUARDRAIL HARD BLOCK] Rentang baris terlalu lebar (${lineSpan} baris: L${startLine}-L${endLine}). Maksimal 80 baris.\n` +
+          `[GUARDRAIL HARD BLOCK] Rentang baris terlalu lebar (${lineSpan} baris: L${startLine}-L${endLine}). Maksimal 200 baris.\n` +
           `Persempit StartLine & EndLine (rekomendasi ±20-40 baris). Untuk eksplorasi arsitektur, gunakan strata-mcp atau codegraph.`
         );
       }

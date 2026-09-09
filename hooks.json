@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node hooks/pre-view-file.cjs",
+            "command": "node /home/shironim/.gemini/hooks/pre-view-file.cjs",
             "timeout": 5
           }
         ]
@@ -22,7 +22,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node hooks/pre-search-quota.cjs",
+            "command": "node /home/shironim/.gemini/hooks/pre-search-quota.cjs",
             "timeout": 5
           }
         ]
@@ -37,7 +37,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node hooks/pre-run-command.cjs",
+            "command": "node /home/shironim/.gemini/hooks/pre-run-command.cjs",
             "timeout": 5
           }
         ]
@@ -52,7 +52,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node hooks/post-transcript-gc.cjs",
+            "command": "node /home/shironim/.gemini/hooks/post-transcript-gc.cjs",
             "timeout": 5
           }
         ]
