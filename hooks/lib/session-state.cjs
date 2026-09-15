@@ -1,5 +1,37 @@
 const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const crypto = require('crypto');
+
+/**
+ * Universal path normalization (POSIX format, lowercased drive letter for Windows).
+ * Guarantees consistent comparisons across Ubuntu and Windows.
+ */
+function normalizePath(p) {
+  if (!p) return '';
+  let n = p.replace(/\\/g, '/');
+  if (/^[a-zA-Z]:/.test(n)) {
+    n = n.charAt(0).toLowerCase() + n.slice(1);
+  }
+  return n.replace(/\/+$/, '');
+}
+
+/**
+ * Checks if target path is inside or equal to parent path in a platform-agnostic manner.
+ */
+function isPathInside(target, parent) {
+  let normTarget = normalizePath(target);
+  let normParent = normalizePath(parent);
+  if (!normTarget || !normParent) return false;
+
+  // Paths with Windows drive letters are case-insensitive
+  if (/^[a-z]:/i.test(normTarget) && /^[a-z]:/i.test(normParent)) {
+    normTarget = normTarget.toLowerCase();
+    normParent = normParent.toLowerCase();
+  }
+
+  return normTarget === normParent || normTarget.startsWith(normParent + '/');
+}
 
 /**
  * Mengambil turn interaksi terbaru dari user beserta step-step setelahnya secara aman.
@@ -12,7 +44,7 @@ function getLatestUserTurn(transcriptPath) {
 
   try {
     const content = fs.readFileSync(transcriptPath, 'utf-8');
-    const lines = content.trim().split('\n');
+    const lines = content.replace(/\r\n/g, '\n').trim().split('\n');
     if (lines.length === 0) return { stepIndex: 0, content: '', turnSteps: [] };
 
     let userIndex = -1;
@@ -104,7 +136,7 @@ function countCurrentTurnViewFiles(transcriptPath, targetNormalizedPath = '', ac
       for (const call of step.tool_calls) {
         if (call.name === 'view_file') {
           const args = call.args || {};
-          const path = (args.AbsolutePath || args.absolutePath || '').replace(/\\/g, '/');
+          const path = normalizePath(args.AbsolutePath || args.absolutePath || '');
           
           const isConfig =
             /\/mcp\/.*\.json$/i.test(path) ||
@@ -113,11 +145,17 @@ function countCurrentTurnViewFiles(transcriptPath, targetNormalizedPath = '', ac
             /\/(skills|\.agents|config|rules|hooks|builtin)\/.*$/i.test(path);
           if (isConfig) continue;
 
+          if (/\.json$/i.test(path)) {
+            try {
+              if (fs.existsSync(path) && fs.statSync(path).size <= 15360) {
+                continue;
+              }
+            } catch (_) {}
+          }
+
           const isDoc = /\.(md|mdx|txt|rst)$/i.test(path);
           const wsList = Array.isArray(activeWorkspace) ? activeWorkspace : (activeWorkspace ? [activeWorkspace] : []);
-          const isDocInsideWorkspace = isDoc && wsList.some(ws =>
-            path.startsWith(ws + '/') || path === ws
-          );
+          const isDocInsideWorkspace = isDoc && wsList.some(ws => isPathInside(path, ws));
           if (isDocInsideWorkspace) continue; // internal workspace docs are exempt from quotas
 
           // Count restricted targets: source code and external docs
@@ -146,9 +184,10 @@ function countCurrentTurnViewFiles(transcriptPath, targetNormalizedPath = '', ac
 }
 
 function getDenialStateFile(transcriptPath) {
-  if (!transcriptPath) return '/tmp/agy_turn_denials_default.json';
+  const tmpDir = os.tmpdir();
+  if (!transcriptPath) return path.join(tmpDir, 'agy_turn_denials_default.json');
   const hash = crypto.createHash('md5').update(transcriptPath).digest('hex').slice(0, 16);
-  return `/tmp/agy_turn_denials_${hash}.json`;
+  return path.join(tmpDir, `agy_turn_denials_${hash}.json`);
 }
 
 function getDenialState(transcriptPath, userStepIndex) {
@@ -199,7 +238,6 @@ function recordTurnDenial(transcriptPath) {
 function countCurrentTurnContextMode(transcriptPath) {
   const userTurn = getLatestUserTurn(transcriptPath);
   let count = 0;
-
   for (const step of userTurn.turnSteps) {
     if (step.tool_calls && Array.isArray(step.tool_calls)) {
       for (const call of step.tool_calls) {
@@ -222,6 +260,8 @@ function countCurrentTurnContextMode(transcriptPath) {
 }
 
 module.exports = {
+  normalizePath,
+  isPathInside,
   getLatestUserTurn,
   countCurrentTurnInvestigations,
   countCurrentTurnViewFiles,

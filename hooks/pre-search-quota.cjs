@@ -3,7 +3,8 @@ const {
   countCurrentTurnInvestigations,
   countCurrentTurnContextMode,
   isCircuitBreakerTripped,
-  recordTurnDenial
+  recordTurnDenial,
+  normalizePath
 } = require('./lib/session-state.cjs');
 
 function readStdin() {
@@ -16,11 +17,11 @@ function readStdin() {
 
 let globalTranscriptPath = '';
 
-function sendDecision(decision, reason) {
+function sendDecision(decision, reason, extra = {}) {
   if (decision === 'deny' && globalTranscriptPath) {
     recordTurnDenial(globalTranscriptPath);
   }
-  const payload = { decision };
+  const payload = { decision, ...extra };
   if (reason) payload.reason = reason;
   process.stdout.write(JSON.stringify(payload));
   process.exit(0);
@@ -57,10 +58,29 @@ function main() {
   const toolName = toolCall.name || '';
   const args = toolCall.args || {};
 
+  const pathOverwrite = {};
+  if (toolName === 'grep_search') {
+    const rawSearchPath = args.SearchPath || '';
+    if (rawSearchPath) {
+      const normSearchPath = normalizePath(rawSearchPath);
+      if (rawSearchPath.includes('\\') || rawSearchPath !== normSearchPath) {
+        pathOverwrite.SearchPath = normSearchPath;
+      }
+    }
+  } else if (toolName === 'find_by_name') {
+    const rawSearchDir = args.SearchDirectory || '';
+    if (rawSearchDir) {
+      const normSearchDir = normalizePath(rawSearchDir);
+      if (rawSearchDir.includes('\\') || rawSearchDir !== normSearchDir) {
+        pathOverwrite.SearchDirectory = normSearchDir;
+      }
+    }
+  }
+
   // 1. HARD RULE: Prevent "Grep-Dumping" (Using grep_search with broad regex to dump an entire file)
   if (toolName === 'grep_search') {
     const query = (args.Query || '').trim();
-    const searchPath = (args.SearchPath || '').replace(/\\/g, '/');
+    const searchPath = (pathOverwrite.SearchPath || args.SearchPath || '').replace(/\\/g, '/');
     const isSingleFile = /\.[a-z0-9]+$/i.test(searchPath);
     const isWildcardDump = /^(|\.\*|\^.*|\.|\$|\^|;|import|const|function|\{|\})$/i.test(query);
 
@@ -74,10 +94,41 @@ function main() {
     }
   }
 
-  // 2. HARD RULE: Guard context-mode against serial micro-scripting loops & quota bypass
+  // 2. HARD RULE: Guard context-mode & MCP parameter auto-repair
   if (toolName === 'call_mcp_tool') {
     const serverName = (args.ServerName || '').toLowerCase();
     const mcpTool = (args.ToolName || '').toLowerCase();
+
+    // Auto-repair missing required MCP tool arguments
+    let mcpArgs = args.Arguments;
+    let modifiedArgs = false;
+    if (typeof mcpArgs === 'string') {
+      try { mcpArgs = JSON.parse(mcpArgs); } catch (_) { mcpArgs = {}; }
+    } else if (!mcpArgs || typeof mcpArgs !== 'object') {
+      mcpArgs = {};
+    }
+
+    if (mcpTool === 'ctx_execute' && !mcpArgs.language) {
+      mcpArgs.language = 'javascript';
+      modifiedArgs = true;
+    }
+
+    if (mcpTool === 'sequentialthinking') {
+      if (mcpArgs.nextThoughtNeeded === undefined) {
+        mcpArgs.nextThoughtNeeded = false;
+        modifiedArgs = true;
+      }
+      if (mcpArgs.thoughtNumber === undefined || isNaN(Number(mcpArgs.thoughtNumber))) {
+        mcpArgs.thoughtNumber = 1;
+        modifiedArgs = true;
+      }
+      if (mcpArgs.totalThoughts === undefined || isNaN(Number(mcpArgs.totalThoughts))) {
+        mcpArgs.totalThoughts = 1;
+        modifiedArgs = true;
+      }
+    }
+
+    const extraDecision = modifiedArgs ? { overwrite: { Arguments: mcpArgs } } : {};
 
     if (serverName === 'context-mode' || mcpTool.startsWith('ctx_')) {
       const MAX_CTX_MODE_QUOTA = 3;
@@ -104,7 +155,12 @@ function main() {
     ].includes(args.ToolName || '');
     if (!isSearchOrReadMcp && !mcpTool.startsWith('ctx_')) {
       // Analytical and non-search MCP tools (such as sequentialthinking) do not consume discovery quota
-      sendDecision('allow');
+      sendDecision('allow', null, extraDecision);
+    }
+
+    // For non-search ctx tools (e.g. ctx_execute), they are code execution, not discovery search
+    if (mcpTool !== 'ctx_search') {
+      sendDecision('allow', null, extraDecision);
     }
   }
 
@@ -125,14 +181,16 @@ function main() {
   }
 
   const transcriptPath = data.transcriptPath || '';
+  const allowExtra = Object.keys(pathOverwrite).length ? { overwrite: pathOverwrite } : {};
+
   if (!transcriptPath) {
-    sendDecision('allow');
+    sendDecision('allow', null, allowExtra);
   }
 
   const { count } = countCurrentTurnInvestigations(transcriptPath);
 
-  // 4. HARD RULE: Investigation quota limit (10 calls per turn for Early Failure Interception)
-  const MAX_SEARCH_QUOTA = 10;
+  // 4. HARD RULE: Investigation quota limit (3 calls per turn for Early Failure Interception, matching GEMINI.md)
+  const MAX_SEARCH_QUOTA = 3;
 
   if (count >= MAX_SEARCH_QUOTA) {
     sendDecision(
@@ -146,7 +204,7 @@ function main() {
     );
   }
 
-  sendDecision('allow');
+  sendDecision('allow', null, allowExtra);
 }
 
 main();

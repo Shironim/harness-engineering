@@ -61,7 +61,8 @@ function main() {
   const cmdPrefix = '(?:^|[|;&]\\s*|&&\\s*|\\|\\|\\s*)';
   const sourceExts = 'vue|ts|js|php|blade\\.php|jsx|tsx|css|scss|py|go|rs|sql|sh|bash|java|c|cpp|rb|graphql|gql|json';
   const dumpPatterns = [
-    new RegExp(`${cmdPrefix}(cat|nl|more|less|paste)\\s+(?!<<)[^|;&><\\s]+\\.(${sourceExts})\\b`, 'i'),
+    new RegExp(`${cmdPrefix}(cat|gc|type|Get-Content|nl|more|less|paste)\\s+(?!<<)[^|;&><\\s]+\\.(${sourceExts})\\b`, 'i'),
+    new RegExp(`${cmdPrefix}(Get-Content|gc)\\s+.*-(TotalCount|Head|Tail)\\s+([8-9]\\d|[1-9]\\d{2,})\\s+.*\\.(${sourceExts})\\b`, 'i'),
     new RegExp(`${cmdPrefix}awk\\s+.*(print|\\$0).*[^|;&><\\s]+\\.(${sourceExts})\\b`, 'i'),
     new RegExp(`${cmdPrefix}(node|python[23]?|perl|ruby)\\s+-[ec]\\s+["\\'][^"\\']*(read|open|readFileSync)[^"\\']*\\b[^"\\']+\\.(${sourceExts})["\\']`, 'i'),
     new RegExp(`${cmdPrefix}grep\\s+-v\\s+["'][^"']*["']\\s+[^|;&><\\s]+\\.(${sourceExts})\\b`, 'i'),
@@ -73,7 +74,7 @@ function main() {
     new RegExp(`${cmdPrefix}(pr|fold|tee)\\s+.*[^|;&><\\s]+\\.(${sourceExts})\\b`, 'i'),
     new RegExp(`${cmdPrefix}git\\s+(show|diff|log\\s+-p)\\s+[^|;&><\\s]*[:/][^|;&><\\s]+\\.(${sourceExts})\\b`, 'i'),
     new RegExp(`${cmdPrefix}(tar|gzip|zcat)\\s+.*\\b[^|;&><\\s]+\\.(${sourceExts})\\b`, 'i'),
-    new RegExp(`${cmdPrefix}(node|bun|python[23]?|bash|sh|php)\\s+[^|;&><\\s]*(scratch|tmp|temp)[/\\\\][^|;&><\\s]+\\.(py|js|ts|sh|php)\\b`, 'i')
+    new RegExp(`${cmdPrefix}(node|bun|python[23]?|bash|sh|php|powershell|pwsh)\\s+[^|;&><\\s]*(scratch|tmp|temp)[/\\\\][^|;&><\\s]+\\.(py|js|ts|sh|php|ps1)\\b`, 'i')
   ];
 
   let matchedPattern = -1;

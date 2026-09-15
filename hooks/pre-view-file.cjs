@@ -1,5 +1,11 @@
 const fs = require('fs');
-const { countCurrentTurnViewFiles, isCircuitBreakerTripped, recordTurnDenial } = require('./lib/session-state.cjs');
+const {
+  countCurrentTurnViewFiles,
+  isCircuitBreakerTripped,
+  recordTurnDenial,
+  normalizePath,
+  isPathInside
+} = require('./lib/session-state.cjs');
 
 function readStdin() {
   try {
@@ -11,11 +17,11 @@ function readStdin() {
 
 let globalTranscriptPath = '';
 
-function sendDecision(decision, reason) {
+function sendDecision(decision, reason, extra = {}) {
   if (decision === 'deny' && globalTranscriptPath) {
     recordTurnDenial(globalTranscriptPath);
   }
-  const payload = { decision };
+  const payload = { decision, ...extra };
   if (reason) payload.reason = reason;
   process.stdout.write(JSON.stringify(payload));
   process.exit(0);
@@ -54,7 +60,20 @@ function main() {
   const startLine = args.StartLine !== undefined ? Number(args.StartLine) : undefined;
   const endLine = args.EndLine !== undefined ? Number(args.EndLine) : undefined;
 
-  const normalizedPath = absolutePath.replace(/\\/g, '/');
+  const normalizedPath = normalizePath(absolutePath);
+  const needsPathOverwrite = absolutePath && (absolutePath.includes('\\') || absolutePath !== normalizedPath);
+  const baseDecision = needsPathOverwrite ? { overwrite: { AbsolutePath: normalizedPath } } : {};
+
+  // 1a. System-generated tool outputs & Internal Brain/Artifact documents (Whitelisted)
+  const isInternalSystemOrOutput =
+    /\/\.system_generated\/steps\/\d+\/output\.txt$/i.test(normalizedPath) ||
+    /\/(antigravity-cli|antigravity-ide|\.antigravity|\.gemini)\/brain\/.*$/i.test(normalizedPath) ||
+    /\/scratch\/.*$/i.test(normalizedPath);
+
+  if (isInternalSystemOrOutput) {
+    sendDecision('allow', null, baseDecision);
+  }
+
   const rawWorkspaces = [];
   if (Array.isArray(data.workspacePaths)) rawWorkspaces.push(...data.workspacePaths);
   if (data.workspace) rawWorkspaces.push(data.workspace);
@@ -62,32 +81,47 @@ function main() {
   if (process.cwd()) rawWorkspaces.push(process.cwd());
 
   const activeWorkspaces = rawWorkspaces
-    .map(w => (w || '').replace(/\\/g, '/').replace(/\/+$/, ''))
+    .map(w => normalizePath(w))
     .filter(Boolean);
 
-  // 1. Documentation & Markdown Notes: Allowed in full ONLY if originating within or linked into active workspace
+  // 1b. Documentation & Markdown Notes: Allowed in full ONLY if originating within or linked into active workspace
   const isDocFile = /\.(md|mdx|txt|rst)$/i.test(normalizedPath);
-  const isWithinWorkspace = activeWorkspaces.some(ws =>
-    normalizedPath.startsWith(ws + '/') || normalizedPath === ws
-  );
+  const isWithinWorkspace = activeWorkspaces.some(ws => isPathInside(normalizedPath, ws));
 
   if (isDocFile && isWithinWorkspace) {
-    sendDecision('allow');
+    sendDecision('allow', null, baseDecision);
   }
 
-  // 1b. Configs, manifests, MCP schemas, and hooks
+  // 1c. Configs, manifests, MCP schemas, rules, skills, and hooks
   const isConfigOrSchema =
     /\/mcp\/.*\.json$/i.test(normalizedPath) ||
     /\.(ya?ml|toml|ini|env|env\.[a-z0-9_.-]+)$/i.test(normalizedPath) ||
     /(package|composer|tsconfig|vite\.config|webpack\.config|tailwind\.config)\.(json|js|ts|cjs|mjs)$/i.test(normalizedPath) ||
-    /\/hooks\/.*\.cjs$/i.test(normalizedPath);
+    /\/(hooks|skills|\.agents|config|rules|builtin)\/.*$/i.test(normalizedPath);
 
   if (isConfigOrSchema) {
-    sendDecision('allow');
+    sendDecision('allow', null, baseDecision);
+  }
+
+  // 1d. Data & Lightweight JSON files (<= 250 lines or <= 15 KB)
+  let isSmallJson = false;
+  if (/\.json$/i.test(normalizedPath)) {
+    try {
+      if (fs.existsSync(normalizedPath)) {
+        const stats = fs.statSync(normalizedPath);
+        if (stats.size <= 15360) { // <= 15 KB (typically <= 250 lines)
+          isSmallJson = true;
+        }
+      }
+    } catch (_) {}
+  }
+
+  if (isSmallJson) {
+    sendDecision('allow', null, baseDecision);
   }
 
   // 2. Restricted Targets: Source code AND External Documentation (outside active workspace)
-  const isSourceCode = /\.(vue|ts|js|php|blade\.php|jsx|tsx|css|scss|py|go|rs|sql|sh|bash|java|c|cpp|h|hpp|rb|graphql|gql|json)$/i.test(normalizedPath);
+  const isSourceCode = /\.(vue|ts|js|php|blade\.php|jsx|tsx|css|scss|py|go|rs|sql|sh|bash|java|c|cpp|h|hpp|rb|graphql|gql)$/i.test(normalizedPath) || (/\.json$/i.test(normalizedPath) && !isSmallJson);
   const isExternalDoc = isDocFile && !isWithinWorkspace;
   const isRestrictedTarget = isSourceCode || isExternalDoc;
 
@@ -112,17 +146,20 @@ function main() {
       }
 
       // 2b. Anti-Slicing Loop: Mencegah pembacaan berkali-kali pada file yang sama (chunking bypass)
-      if (specificFileCount >= 4) {
+      const currentSpan = (startLine !== undefined && endLine !== undefined) ? (endLine - startLine + 1) : 0;
+      const isPrecisionSlice = currentSpan > 0 && currentSpan <= 40;
+
+      // Pengecualian: Precision slice sempit (<= 40 baris) diperbolehkan hingga 7 kali (misal verifikasi pra-edit)
+      if (specificFileCount >= 4 && (!isPrecisionSlice || specificFileCount >= 7)) {
         sendDecision(
           'deny',
           `[SLICING EROSION GUARD] File '${normalizedPath.split('/').pop()}' telah dibaca ${specificFileCount} kali dalam giliran ini.\n` +
           `Membaca file yang sama secara berulang dalam potongan kecil (micro-slicing/chunking loop) dilarang.\n` +
-          `SOLUSI: Tentukan baris spesifik yang dibutuhkan atau tanyakan ke user alih-alih membaca chunk berkelanjutan.`
+          `SOLUSI: Tentukan baris spesifik yang dibutuhkan (precision slice <= 40 baris) sebelum edit atau tanyakan ke user alih-alih membaca chunk berkelanjutan.`
         );
       }
 
       // 2c. Cumulative Lines Quota: Maksimal akumulasi 2000 baris per turn
-      const currentSpan = (startLine !== undefined && endLine !== undefined) ? (endLine - startLine + 1) : 0;
       if (totalLinesRead + currentSpan > 2000) {
         sendDecision(
           'deny',
@@ -157,7 +194,7 @@ function main() {
     }
   }
 
-  sendDecision('allow');
+  sendDecision('allow', null, baseDecision);
 }
 
 main();
