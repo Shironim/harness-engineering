@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const { runDcpPipeline } = require('./lib/dcp-core.cjs');
 
 function readStdin() {
   try {
@@ -68,58 +69,26 @@ function main() {
       process.exit(0);
     }
 
-    let modified = false;
-
-    // 2. Lakukan pruning HANYA pada step-step masa lalu (sebelum latestUserStepIdx)
-    for (let i = 0; i < steps.length; i++) {
-      const step = steps[i];
-      if (step.step_index >= latestUserStepIdx) {
-        // JANGAN SENTUH turn saat ini agar agent tetap memiliki konteks yang diperlukan saat ini
-        continue;
-      }
-
-      // Pastikan pesan user di masa lalu tidak pernah dirusak
-      if (step.type === 'USER_INPUT') {
-        continue;
-      }
-
-      // A. Pangkas output tool mentah (GENERIC) yang berukuran besar
-      if (step.type === 'GENERIC' && typeof step.content === 'string') {
-        if (step.content.length > 250 && !step.content.startsWith('[Pruned by GC:')) {
-          const originalBytes = step.content.length;
-          // Simpan preview 60 karakter pertama agar tetap terbaca secara semantik
-          const preview = step.content.slice(0, 60).replace(/\n/g, ' ');
-          step.content = `[Pruned by GC: "${preview}..." (${originalBytes} bytes archived to preserve context window)]`;
-          
-          step.truncated_fields = step.truncated_fields || [];
-          if (!step.truncated_fields.includes('content')) {
-            step.truncated_fields.push('content');
-          }
-          modified = true;
-        }
-      }
-
-      // B. Pangkas internal thinking (Chain-of-Thought) pada turn masa lalu
-      if (step.type === 'PLANNER_RESPONSE' && typeof step.thinking === 'string') {
-        if (step.thinking.length > 200 && !step.thinking.startsWith('[Pruned by GC:')) {
-          const originalBytes = step.thinking.length;
-          step.thinking = `[Pruned by GC: Historical CoT (${originalBytes} bytes archived)]`;
-          
-          step.truncated_fields = step.truncated_fields || [];
-          if (!step.truncated_fields.includes('thinking')) {
-            step.truncated_fields.push('thinking');
-          }
-          modified = true;
-        }
-      }
-    }
+    // 2. Lakukan Dynamic Context Pruning (DCP) pada step-step masa lalu
+    const modified = runDcpPipeline(steps, latestUserStepIdx);
 
     // 3. Tulis kembali ke disk secara aman jika ada perubahan
     if (modified) {
       const compactedLines = steps.map(s => JSON.stringify(s)).join('\n') + '\n';
-      const tmpPath = `${transcriptPath}.gc_tmp`;
-      fs.writeFileSync(tmpPath, compactedLines, 'utf-8');
-      fs.renameSync(tmpPath, transcriptPath);
+      const tmpPath = `${transcriptPath}.gc_tmp_${Date.now()}`;
+      try {
+        fs.writeFileSync(tmpPath, compactedLines, 'utf-8');
+        fs.renameSync(tmpPath, transcriptPath);
+      } catch (renameErr) {
+        // Fallback untuk Windows jika fs.renameSync terhalang file lock (EBUSY/EPERM)
+        try {
+          fs.writeFileSync(transcriptPath, compactedLines, 'utf-8');
+        } catch (_) {}
+      } finally {
+        try {
+          if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
+        } catch (_) {}
+      }
     }
   } catch (err) {
     // Non-blocking: Jika terjadi kesalahan parsing file, jangan hentikan eksekusi
