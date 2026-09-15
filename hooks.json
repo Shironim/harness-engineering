@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node /home/shironim/.gemini/hooks/pre-view-file.cjs",
+            "command": "node ../hooks/pre-view-file.cjs",
             "timeout": 5
           }
         ]
@@ -22,7 +22,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node /home/shironim/.gemini/hooks/pre-search-quota.cjs",
+            "command": "node ../hooks/pre-search-quota.cjs",
             "timeout": 5
           }
         ]
@@ -37,7 +37,22 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node /home/shironim/.gemini/hooks/pre-run-command.cjs",
+            "command": "node ../hooks/pre-run-command.cjs",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  },
+  "write-file-guard": {
+    "enabled": true,
+    "PreToolUse": [
+      {
+        "matcher": "write_to_file",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ../hooks/pre-write-to-file.cjs",
             "timeout": 5
           }
         ]
@@ -46,16 +61,31 @@
   },
   "transcript-compactor": {
     "enabled": true,
-    "PostToolUse": [
+    "PostInvocation": [
       {
-        "matcher": "*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node /home/shironim/.gemini/hooks/post-transcript-gc.cjs",
-            "timeout": 5
-          }
-        ]
+        "type": "command",
+        "command": "node ../hooks/post-transcript-gc.cjs",
+        "timeout": 5
+      }
+    ]
+  },
+  "industry-standard-enforcer": {
+    "enabled": true,
+    "PreInvocation": [
+      {
+        "type": "command",
+        "command": "node ../hooks/pre-invocation-mindset.cjs",
+        "timeout": 5
+      }
+    ]
+  },
+  "stop-verification-gatekeeper": {
+    "enabled": true,
+    "Stop": [
+      {
+        "type": "command",
+        "command": "node ../hooks/stop-verification-check.cjs",
+        "timeout": 10
       }
     ]
   }
