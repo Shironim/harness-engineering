@@ -2,6 +2,7 @@ const fs = require('fs');
 const {
   countCurrentTurnInvestigations,
   countCurrentTurnContextMode,
+  countCurrentTurnUnifiedInvestigations,
   isCircuitBreakerTripped,
   recordTurnDenial,
   normalizePath
@@ -108,9 +109,55 @@ function main() {
       mcpArgs = {};
     }
 
-    if (mcpTool === 'ctx_execute' && !mcpArgs.language) {
-      mcpArgs.language = 'javascript';
-      modifiedArgs = true;
+    if (mcpTool === 'ctx_execute') {
+      if (!mcpArgs.language) {
+        mcpArgs.language = 'javascript';
+        modifiedArgs = true;
+      }
+
+      // Dynamic Multi-Project CWD Prelude & ESM-to-CJS Pre-Flight Transpiler
+      if (mcpArgs.code && typeof mcpArgs.code === 'string') {
+        let code = mcpArgs.code;
+        let codeModified = false;
+
+        // 1. ESM to CommonJS syntax normalization
+        if (/\bimport\s+([\s\S]*?)\s+from\s+['"]([^'"]+)['"]/.test(code)) {
+          code = code.replace(
+            /import\s+([a-zA-Z0-9_$]+)\s+from\s+['"]([^'"]+)['"];?/g,
+            'const $1 = require("$2");'
+          ).replace(
+            /import\s+\{([^}]+)\}\s+from\s+['"]([^'"]+)['"];?/g,
+            'const { $1 } = require("$2");'
+          );
+          codeModified = true;
+        }
+
+        // 2. Dynamic Workspace CWD resolution (Multi-project agnostic, no hardcoding)
+        const rawWorkspaces = [];
+        if (Array.isArray(data.workspacePaths)) rawWorkspaces.push(...data.workspacePaths);
+        if (data.workspace) rawWorkspaces.push(data.workspace);
+        if (data.cwd) rawWorkspaces.push(data.cwd);
+        if (process.cwd()) rawWorkspaces.push(process.cwd());
+
+        const activeWorkspaces = rawWorkspaces
+          .map(w => normalizePath(w))
+          .filter(Boolean);
+        const primaryWorkspace = activeWorkspaces[0] || '';
+
+        if (primaryWorkspace && !code.includes('process.chdir')) {
+          const escapedWs = primaryWorkspace.replace(/\\/g, '/');
+          const dynamicPrelude =
+            `try { process.chdir(${JSON.stringify(escapedWs)}); } catch (_) {}\n` +
+            `const __ACTIVE_WORKSPACE__ = ${JSON.stringify(escapedWs)};\n`;
+          code = dynamicPrelude + code;
+          codeModified = true;
+        }
+
+        if (codeModified) {
+          mcpArgs.code = code;
+          modifiedArgs = true;
+        }
+      }
     }
 
     if (mcpTool === 'sequentialthinking') {
@@ -128,23 +175,29 @@ function main() {
       }
     }
 
+    if (mcpTool === 'codegraph_explore') {
+      if (!mcpArgs.query && mcpArgs.symbol) {
+        mcpArgs.query = mcpArgs.symbol;
+        modifiedArgs = true;
+      }
+    }
+
     const extraDecision = modifiedArgs ? { overwrite: { Arguments: mcpArgs } } : {};
 
     if (serverName === 'context-mode' || mcpTool.startsWith('ctx_')) {
-      const MAX_CTX_MODE_QUOTA = 3;
-      const { count: ctxCount } = countCurrentTurnContextMode(globalTranscriptPath);
+      const MAX_CTX_MODE_QUOTA = 4; // 3 discovery/scanning + 1 verification/synthesis
+      const { totalCount, ctxCount, searchCount } = countCurrentTurnUnifiedInvestigations(globalTranscriptPath);
 
-      if (ctxCount >= MAX_CTX_MODE_QUOTA) {
+      if (totalCount >= MAX_CTX_MODE_QUOTA || ctxCount >= MAX_CTX_MODE_QUOTA) {
         sendDecision(
           'deny',
-          `[CONTEXT-MODE ANTI-CHAINING GUARD] Pemanggilan context-mode (${args.ToolName}) telah mencapai batas (${MAX_CTX_MODE_QUOTA} calls) dalam giliran ini!\n` +
-          `Dilarang memanggil script sandbox secara serial untuk mengintip file sedikit demi sedikit (serial micro-scripting loop).\n\n` +
-          `PANDUAN OPTIMASI UNTUK SEQUENTIAL-THINKING:\n` +
-          `1. Hentikan eksekusi script serial sekarang. Beralih ke sequentialthinking untuk merancang 'Batch-First Aggregation Script'.\n` +
-          `2. BATCH-FIRST: Baca dan bandingkan seluruh target file sekaligus dalam SATU script (fs.readFileSync simultan).\n` +
-          `3. STRICT FILTERING: DILARANG console.log raw dump (> 30 baris / > 2 KB) yang memicu pemotongan output ke disk (.system_generated/.../output.txt).\n` +
-          `4. STRUKTUR RINGKAS: Kembalikan JSON terstruktur ringkas (<= 30 baris) berisi matriks perbandingan, daftar simbol, atau baris kunci.\n` +
-          `5. STOP & ASK EARLY: Jika target pencarian tetap tidak ditemukan atau ambigu, hentikan probing dan tanyakan langsung ke pengguna.`
+          `[UNIFIED INVESTIGATION CIRCUIT BREAKER] Kuota investigasi gabungan (${MAX_CTX_MODE_QUOTA} calls: Total ${totalCount}) telah tercapai dalam giliran ini!\n` +
+          `Alokasi investigasi turn ini telah digunakan penuh (Search: ${searchCount || 0}, Context: ${ctxCount || 0}).\n\n` +
+          `PANDUAN ANTI-PANIC PIVOTING (BOUNDED AUTONOMY):\n` +
+          `1. HENTIKAN seluruh pemanggilan tool investigasi coba-ulang sekarang.\n` +
+          `2. Rangkum data yang telah dikumpulkan sejauh ini dan sajikan laporan progres ke user.\n` +
+          `3. Jika langkah kode sudah terpetakan, langsung gunakan replace_file_content pada baris target.\n` +
+          `4. Jika target belum ditemukan, tanyakan langsung kepada user panduan spesifik (Stop & Ask Early).`
         );
       }
     }
@@ -187,20 +240,21 @@ function main() {
     sendDecision('allow', null, allowExtra);
   }
 
-  const { count } = countCurrentTurnInvestigations(transcriptPath);
+  const { totalCount, searchCount } = countCurrentTurnUnifiedInvestigations(transcriptPath);
 
-  // 4. HARD RULE: Investigation quota limit (3 calls per turn for Early Failure Interception, matching GEMINI.md)
-  const MAX_SEARCH_QUOTA = 3;
+  // 4. HARD RULE: Unified Investigation quota limit (4 calls per turn: 3 discovery + 1 verification/synthesis)
+  const MAX_SEARCH_QUOTA = 4;
 
-  if (count >= MAX_SEARCH_QUOTA) {
+  if (totalCount >= MAX_SEARCH_QUOTA || searchCount >= MAX_SEARCH_QUOTA) {
     sendDecision(
       'deny',
-      `[EARLY CIRCUIT BREAKER] Kuota investigasi/pencarian (${MAX_SEARCH_QUOTA} calls) telah tercapai untuk giliran ini!\n` +
-      `Pencarian liar atau looping browsing lebih lanjut dilarang untuk mencegah context rot dan pemborosan token.\n` +
-      `MANDATORY ACTIONS (EARLY FAILURE INTERCEPTION):\n` +
-      `1. HENTIKAN investigasi sekarang juga.\n` +
-      `2. Laporkan secara transparan apa yang sudah dicari dan di mana letak ambiguitas/kebuntuan.\n` +
-      `3. Tanyakan langsung kepada user panduan spesifik, nama fungsi, atau jalur file yang dimaksud.`
+      `[UNIFIED INVESTIGATION CIRCUIT BREAKER] Kuota investigasi gabungan (${MAX_SEARCH_QUOTA} calls: Total ${totalCount}) telah tercapai untuk giliran ini!\n` +
+      `Pencarian liar atau browsing berulang dihentikan untuk melindungi context window dari memory rot.\n\n` +
+      `PANDUAN ANTI-PANIC PIVOTING (BOUNDED AUTONOMY):\n` +
+      `1. HENTIKAN investigasi dan dilarang beralih tool coba-ulang.\n` +
+      `2. Rangkum data yang telah dikumpulkan sejauh ini dan laporkan hasilnya ke user.\n` +
+      `3. Jika langkah kode sudah jelas, lanjutkan ke fase eksekusi (replace_file_content).\n` +
+      `4. Jika terdapat ambiguitas, tanyakan langsung kepada user panduan spesifik (Stop & Ask Early).`
     );
   }
 

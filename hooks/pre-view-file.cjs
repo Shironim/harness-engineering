@@ -129,19 +129,25 @@ function main() {
     const transcriptPath = data.transcriptPath || '';
     if (transcriptPath) {
       const { count, specificFileCount, totalLinesRead } = countCurrentTurnViewFiles(transcriptPath, normalizedPath, activeWorkspaces);
-      const MAX_VIEW_QUOTA = 8; // Maksimal 8 pemanggilan view_file restricted per turn
+      
+      // Hitung apakah pemanggilan ini adalah precision slice (rentang sempit <= 40 baris pra-edit)
+      const currentSpan = (startLine !== undefined && endLine !== undefined) ? (endLine - startLine + 1) : 0;
+      const isPrecisionSlice = currentSpan > 0 && currentSpan <= 40;
+      
+      // Titik Keseimbangan: 8 calls untuk broad reading, 12 calls untuk precision slicing pra-edit
+      const MAX_VIEW_QUOTA = isPrecisionSlice ? 12 : 8;
 
       if (count >= MAX_VIEW_QUOTA) {
         sendDecision(
           'deny',
-          `[READ QUOTA BREAKER] Kuota view_file (${MAX_VIEW_QUOTA} pemanggilan) telah tercapai untuk giliran ini.\n` +
-          `Daisy-chaining view_file dilarang keras untuk mencegah context rot & pemborosan token.\n` +
+          `[READ QUOTA BREAKER] Kuota view_file (${MAX_VIEW_QUOTA} pemanggilan${isPrecisionSlice ? ' precision-slice' : ''}) telah tercapai untuk giliran ini.\n` +
+          `Daisy-chaining view_file dihentikan untuk melindungi context window dari memory rot.\n` +
           `Target: ${normalizedPath}\n` +
           `RUTE RESMI WAJIB (ACTIONABLE OFF-RAMP):\n` +
-          `• Fungsi / Call Graph: Gunakan codegraph:codegraph_explore(symbol='namaSimbol').\n` +
-          `• UI / Komponen Frontend: Gunakan strata-mcp:inspect_component.\n` +
+          `• Fungsi / Call Graph: Gunakan codegraph:codegraph_explore(query='namaSimbol').\n` +
+          `• UI / Komponen Frontend: Gunakan strata-mcp:inspect_component(path='...').\n` +
           `• Multi-file search: Gunakan context-mode (ctx_search).\n` +
-          `• Jika lokasi belum jelas: Hentikan pemanggilan tool, laporkan progres, dan tanyakan langsung ke user.`
+          `• Jika baris sudah terpetakan: Langsung lakukan replace_file_content tanpa membaca ulang.`
         );
       }
 

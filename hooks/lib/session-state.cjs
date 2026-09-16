@@ -259,6 +259,51 @@ function countCurrentTurnContextMode(transcriptPath) {
   };
 }
 
+/**
+ * Menghitung total pemanggilan seluruh tool investigasi (search, AST inspect, dan context-mode)
+ * dalam turn user saat ini untuk mencegah panic pivoting lintas tool secara deterministik.
+ */
+function countCurrentTurnUnifiedInvestigations(transcriptPath) {
+  const userTurn = getLatestUserTurn(transcriptPath);
+  let totalCount = 0;
+  let searchCount = 0;
+  let ctxCount = 0;
+
+  const searchTools = new Set(['grep_search', 'find_by_name']);
+  const searchMcpTools = new Set([
+    'find_code', 'search_code', 'search_notes', 'ctx_search', 'get_file_contents'
+  ]);
+
+  for (const step of userTurn.turnSteps) {
+    if (step.tool_calls && Array.isArray(step.tool_calls)) {
+      for (const call of step.tool_calls) {
+        if (searchTools.has(call.name)) {
+          totalCount++;
+          searchCount++;
+        } else if (call.name === 'call_mcp_tool') {
+          const args = call.args || {};
+          const server = (args.ServerName || '').toLowerCase();
+          const tool = (args.ToolName || '').toLowerCase();
+          if (searchMcpTools.has(args.ToolName || '')) {
+            totalCount++;
+            searchCount++;
+          } else if (server === 'context-mode' || tool.startsWith('ctx_')) {
+            totalCount++;
+            ctxCount++;
+          }
+        }
+      }
+    }
+  }
+
+  return {
+    totalCount,
+    searchCount,
+    ctxCount,
+    latestUserPrompt: userTurn.content
+  };
+}
+
 module.exports = {
   normalizePath,
   isPathInside,
@@ -266,6 +311,7 @@ module.exports = {
   countCurrentTurnInvestigations,
   countCurrentTurnViewFiles,
   countCurrentTurnContextMode,
+  countCurrentTurnUnifiedInvestigations,
   isCircuitBreakerTripped,
   recordTurnDenial
 };

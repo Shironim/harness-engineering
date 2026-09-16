@@ -48,3 +48,17 @@ Select the appropriate tool based on the task domain to prevent *context bloat*,
 | **Backend / Multi-File Symbols / Call Graph** | `codegraph` (`codegraph_explore`) | Map incoming/outgoing callers, symbol blast radiuses, and cross-file relation flows in a single invocation. |
 | **Massive Data/Log Processing & Batch Aggregation** | `context-mode` (`ctx_execute`, `ctx_execute_file`, `ctx_batch_execute`, `ctx_search`) | Run scripts in a Bun/Node sandbox or perform FTS5 search to condense thousands of lines into concise summaries before loading into context. |
 | **Architectural Reasoning & Complex Hypotheses** | `sequential-thinking` (`sequentialthinking`) | Systematically test step-by-step hypotheses before altering code. Avoid large architectural decisions based on one-shot assumptions. |
+
+---
+
+## 4. Sandboxed Execution & Unified Investigation Guardrails
+
+### `context-mode` (`ctx_execute`) Execution Contract
+- **CJS Environment**: Kode dijalankan dalam fungsi wrapper CommonJS. Wajib gunakan `require('node:fs')`. Pre-flight hook menormalkan sintaks ESM `import` secara otomatis, namun penulisan idiomatis CJS sejak awal diutamakan.
+- **Dynamic Workspace Resolution**: Hook menginjeksi direktori workspace aktif secara dinamis (`process.chdir`) ke sandbox Bun. Relative path diselesaikan terhadap root workspace aktif multi-project pengguna, bukan direktori temporer OS.
+- **Batch-First Aggregation**: Dilarang serial micro-scripting (membaca file sedikit demi sedikit). Baca dan bandingkan seluruh target file sekaligus dalam 1 script dan kembalikan ringkasan terstruktur ringkas (<= 30 baris).
+
+### Anti-Panic Pivoting & Unified Budget
+- Seluruh tool investigasi (`grep_search`, `find_by_name`, `ctx_execute`, dan MCP search tools) berbagi **kuota gabungan maksimal 3 calls per giliran**.
+- Jika batas tercapai, sistem hook akan mengunci (*lockout*) seluruh tool investigasi serentak secara fisik.
+- **Stop & Ask Early**: Dilarang beralih tool investigasi lain (*panic pivoting*) saat terbentur batas kuota. Hentikan tool call, laporkan progres, dan minta panduan spesifik langsung ke pengguna.
