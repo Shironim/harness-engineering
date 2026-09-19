@@ -7,6 +7,11 @@ const {
   recordTurnDenial,
   normalizePath
 } = require('./lib/session-state.cjs');
+const { evaluateSubagentDelegation } = require('./lib/jev-client.cjs');
+const { logHookDecision } = require('./lib/audit-logger.cjs');
+
+const startTime = Date.now();
+let currentToolName = '';
 
 function readStdin() {
   try {
@@ -22,13 +27,23 @@ function sendDecision(decision, reason, extra = {}) {
   if (decision === 'deny' && globalTranscriptPath) {
     recordTurnDenial(globalTranscriptPath);
   }
+  logHookDecision({
+    hookName: 'pre-search-quota',
+    toolName: currentToolName || 'search_tool',
+    decision,
+    reason,
+    durationMs: Date.now() - startTime,
+    extra: {
+      transcriptPath: globalTranscriptPath
+    }
+  });
   const payload = { decision, ...extra };
   if (reason) payload.reason = reason;
   process.stdout.write(JSON.stringify(payload));
   process.exit(0);
 }
 
-function main() {
+async function main() {
   const rawInput = readStdin();
   if (!rawInput.trim()) {
     sendDecision('allow');
@@ -57,6 +72,7 @@ function main() {
 
   const toolCall = data.toolCall || {};
   const toolName = toolCall.name || '';
+  currentToolName = toolName;
   const args = toolCall.args || {};
 
   const pathOverwrite = {};
@@ -82,7 +98,17 @@ function main() {
   if (toolName === 'grep_search') {
     const query = (args.Query || '').trim();
     const searchPath = (pathOverwrite.SearchPath || args.SearchPath || '').replace(/\\/g, '/');
-    const isSingleFile = /\.[a-z0-9]+$/i.test(searchPath);
+    let isSingleFile = false;
+    try {
+      if (fs.existsSync(searchPath)) {
+        isSingleFile = fs.statSync(searchPath).isFile();
+      } else {
+        // Fallback jika path belum ada atau relative
+        isSingleFile = /\.(vue|ts|js|cjs|mjs|php|blade\.php|jsx|tsx|css|scss|py|go|rs|sql|sh|bash|java|c|cpp|rb|graphql|gql|json|ya?ml|toml|env|md|txt)$/i.test(searchPath);
+      }
+    } catch (_) {
+      isSingleFile = false;
+    }
     const isWildcardDump = /^(|\.\*|\^.*|\.|\$|\^|;|import|const|function|\{|\})$/i.test(query);
 
     if (isSingleFile && isWildcardDump) {
@@ -90,15 +116,32 @@ function main() {
         'deny',
         `[GUARDRAIL HARD BLOCK] Using grep_search with a wildcard or universal pattern on a single file to dump its entire contents is strictly prohibited.\n` +
         `Target: ${searchPath}\n` +
-        `Enforcement: Use precision slicing (view_file with narrow StartLine/EndLine <= 80 lines) or AST MCP tools (codegraph / strata-mcp).`
+        `Enforcement: Use precision slicing (view_file with narrow StartLine/EndLine <= 200 lines) or AST MCP tools (codegraph / strata-mcp).`
       );
     }
   }
 
   // 2. HARD RULE: Guard context-mode & MCP parameter auto-repair
   if (toolName === 'call_mcp_tool') {
-    const serverName = (args.ServerName || '').toLowerCase();
-    const mcpTool = (args.ToolName || '').toLowerCase();
+    let serverName = (args.ServerName || '').toLowerCase();
+    let mcpTool = (args.ToolName || '').toLowerCase();
+    let targetServerName = args.ServerName;
+    let targetToolName = args.ToolName;
+    let modifiedServerOrTool = false;
+
+    // Normalize ServerName if "context-mode" was passed instead of registered "context-mode_context-mode"
+    if (serverName === 'context-mode' || serverName === 'context_mode') {
+      targetServerName = 'context-mode_context-mode';
+      serverName = 'context-mode_context-mode';
+      modifiedServerOrTool = true;
+    }
+
+    // Normalize ToolName if namespaced (e.g. "context-mode/ctx_execute" -> "ctx_execute")
+    if (typeof targetToolName === 'string' && targetToolName.includes('/')) {
+      targetToolName = targetToolName.split('/').pop();
+      mcpTool = targetToolName.toLowerCase();
+      modifiedServerOrTool = true;
+    }
 
     // Auto-repair missing required MCP tool arguments
     let mcpArgs = args.Arguments;
@@ -122,13 +165,30 @@ function main() {
 
         // 1. ESM to CommonJS syntax normalization
         if (/\bimport\s+([\s\S]*?)\s+from\s+['"]([^'"]+)['"]/.test(code)) {
-          code = code.replace(
-            /import\s+([a-zA-Z0-9_$]+)\s+from\s+['"]([^'"]+)['"];?/g,
-            'const $1 = require("$2");'
-          ).replace(
-            /import\s+\{([^}]+)\}\s+from\s+['"]([^'"]+)['"];?/g,
-            'const { $1 } = require("$2");'
-          );
+          code = code
+            .replace(
+              /import\s+\*\s+as\s+([a-zA-Z0-9_$]+)\s+from\s+['"]([^'"]+)['"];?/g,
+              'const $1 = require("$2");'
+            )
+            .replace(
+              /import\s+([a-zA-Z0-9_$]+)\s+from\s+['"]([^'"]+)['"];?/g,
+              'const $1 = require("$2");'
+            )
+            .replace(
+              /import\s+\{([^}]+)\}\s+from\s+['"]([^'"]+)['"];?/g,
+              (_, namedImports, modulePath) => {
+                const cjsNamed = namedImports
+                  .split(',')
+                  .map(part => {
+                    const trimmed = part.trim();
+                    if (!trimmed) return '';
+                    return trimmed.replace(/\b([a-zA-Z0-9_$]+)\s+as\s+([a-zA-Z0-9_$]+)\b/g, '$1: $2');
+                  })
+                  .filter(Boolean)
+                  .join(', ');
+                return `const { ${cjsNamed} } = require("${modulePath}");`;
+              }
+            );
           codeModified = true;
         }
 
@@ -182,37 +242,50 @@ function main() {
       }
     }
 
-    const extraDecision = modifiedArgs ? { overwrite: { Arguments: mcpArgs } } : {};
+    const overwriteObj = {};
+    if (modifiedArgs) overwriteObj.Arguments = mcpArgs;
+    if (modifiedServerOrTool) {
+      overwriteObj.ServerName = targetServerName;
+      overwriteObj.ToolName = targetToolName;
+    }
+    const extraDecision = Object.keys(overwriteObj).length > 0 ? { overwrite: overwriteObj } : {};
 
-    if (serverName === 'context-mode' || mcpTool.startsWith('ctx_')) {
-      const MAX_CTX_MODE_QUOTA = 4; // 3 discovery/scanning + 1 verification/synthesis
-      const { totalCount, ctxCount, searchCount } = countCurrentTurnUnifiedInvestigations(globalTranscriptPath);
-
-      if (totalCount >= MAX_CTX_MODE_QUOTA || ctxCount >= MAX_CTX_MODE_QUOTA) {
-        sendDecision(
-          'deny',
-          `[UNIFIED INVESTIGATION CIRCUIT BREAKER] Kuota investigasi gabungan (${MAX_CTX_MODE_QUOTA} calls: Total ${totalCount}) telah tercapai dalam giliran ini!\n` +
-          `Alokasi investigasi turn ini telah digunakan penuh (Search: ${searchCount || 0}, Context: ${ctxCount || 0}).\n\n` +
-          `PANDUAN ANTI-PANIC PIVOTING (BOUNDED AUTONOMY):\n` +
-          `1. HENTIKAN seluruh pemanggilan tool investigasi coba-ulang sekarang.\n` +
-          `2. Rangkum data yang telah dikumpulkan sejauh ini dan sajikan laporan progres ke user.\n` +
-          `3. Jika langkah kode sudah terpetakan, langsung gunakan replace_file_content pada baris target.\n` +
-          `4. Jika target belum ditemukan, tanyakan langsung kepada user panduan spesifik (Stop & Ask Early).`
-        );
-      }
+    const diagnosticTools = new Set(['ctx_doctor', 'ctx_stats', 'ctx_upgrade', 'ctx_purge', 'ctx_insight']);
+    if (diagnosticTools.has(mcpTool)) {
+      sendDecision('allow', null, extraDecision);
     }
 
     const isSearchOrReadMcp = [
       'find_code', 'search_code', 'search_notes', 'ctx_search',
       'get_file_contents'
     ].includes(args.ToolName || '');
-    if (!isSearchOrReadMcp && !mcpTool.startsWith('ctx_')) {
-      // Analytical and non-search MCP tools (such as sequentialthinking) do not consume discovery quota
+
+    if (serverName.includes('context-mode') || mcpTool.startsWith('ctx_')) {
+      // Only discovery search tools (like ctx_search) consume search investigation quotas
+      if (isSearchOrReadMcp) {
+        const MAX_CTX_MODE_QUOTA = 4; // 3 discovery/scanning + 1 verification/synthesis
+        const { totalCount, ctxCount, searchCount } = countCurrentTurnUnifiedInvestigations(globalTranscriptPath);
+
+        if (totalCount >= MAX_CTX_MODE_QUOTA || searchCount >= MAX_CTX_MODE_QUOTA) {
+          sendDecision(
+            'deny',
+            `[UNIFIED INVESTIGATION CIRCUIT BREAKER] Kuota investigasi gabungan (${MAX_CTX_MODE_QUOTA} calls: Total ${totalCount}) telah tercapai dalam giliran ini!\n` +
+            `Alokasi investigasi turn ini telah digunakan penuh (Search: ${searchCount || 0}, Context: ${ctxCount || 0}).\n\n` +
+            `PANDUAN ANTI-PANIC PIVOTING (BOUNDED AUTONOMY):\n` +
+            `1. HENTIKAN seluruh pemanggilan tool investigasi coba-ulang sekarang.\n` +
+            `2. Rangkum data yang telah dikumpulkan sejauh ini dan sajikan laporan progres ke user.\n` +
+            `3. Jika langkah kode sudah terpetakan, langsung gunakan replace_file_content pada baris target.\n` +
+            `4. Jika target belum ditemukan, tanyakan langsung kepada user panduan spesifik (Stop & Ask Early).`
+          );
+        }
+      }
+
+      // For non-search ctx tools (e.g. ctx_execute, ctx_execute_file), they are code execution, not discovery search
       sendDecision('allow', null, extraDecision);
     }
 
-    // For non-search ctx tools (e.g. ctx_execute), they are code execution, not discovery search
-    if (mcpTool !== 'ctx_search') {
+    if (!isSearchOrReadMcp) {
+      // Analytical and non-search MCP tools (such as sequentialthinking) do not consume discovery quota
       sendDecision('allow', null, extraDecision);
     }
   }
@@ -220,6 +293,8 @@ function main() {
   // 3. HARD RULE: Subagent delegation guard (prevent delegating raw file reading or bypassing quota)
   if (toolName === 'invoke_subagent') {
     const subagents = args.Subagents || [];
+
+    // Fast-path: Regex check instan (0ms)
     const hasDumpingPrompt = subagents.some(sub => {
       const prompt = sub.Prompt || '';
       return /\b(baca|read|dump|tampilkan|salin|copy)\s+.*(seluruh|full|semua|all|isi|file)\b/i.test(prompt);
@@ -230,6 +305,43 @@ function main() {
         `[DELEGATION GUARD] Mendelegasikan pembacaan file mentah atau bypass kuota ke subagent dilarang.\n` +
         `Subagent harus memiliki spesifikasi tugas konkret (analisis AST, review, dsb.), bukan sebagai proksi file dumper.`
       );
+    }
+
+    // Semantic evaluation via TypeSafe Jev if prompt length > 40
+    for (const sub of subagents) {
+      const prompt = (sub.Prompt || '').trim();
+      if (prompt.length > 40) {
+        let evalResult = null;
+        let jevFailed = false;
+        try {
+          evalResult = await evaluateSubagentDelegation(prompt, 5000);
+        } catch (_) {
+          jevFailed = true;
+        }
+
+        if (evalResult && evalResult.value === 'RAW_DUMP_OR_BYPASS' && evalResult.confidence >= 0.80) {
+          sendDecision(
+            'deny',
+            `[DELEGATION GUARD: SEMANTIC BYPASS DETECTED]\n` +
+            `Delegasi tugas ke subagent '${sub.Role || sub.TypeName}' teridentifikasi sebagai upaya dumping file atau bypass kuota.\n` +
+            `Alasan evaluasi Jev: ${evalResult.reason || 'Tugas tidak memiliki batasan konkret atau mengarah pada pembacaan file mentah.'}\n\n` +
+            `TINDAKAN: Berikan instruksi fokus dan terarah (AST parsing, refactor spesifik, dsb.) alih-alih meminta pembacaan file secara luas.`
+          );
+        }
+
+        // Seragamkan dengan command gate: Jika Jev gagal/timeout dan prompt berindikasi sweeping/unbounded, trigger force_ask
+        if (jevFailed) {
+          const isBroadPrompt = /\b(explore|scan|search|investigate|audit|baca|inspect|cek)\s+.*(codebase|repo|repository|all|seluruh|semua|proyek|project)\b/i.test(prompt);
+          if (isBroadPrompt) {
+            sendDecision(
+              'force_ask',
+              `[DELEGATION GUARD via Jev Fallback] Evaluasi semantik delegasi subagent tidak dapat diselesaikan (Jev offline/timeout).\n` +
+              `Prompt subagent '${sub.Role || sub.TypeName}' terindikasi sweeping/broad investigation:\n"${prompt.slice(0, 160)}..."\n` +
+              `Konfirmasi langsung dari pengguna diperlukan untuk melanjutkan delegasi ini.`
+            );
+          }
+        }
+      }
     }
   }
 
@@ -261,4 +373,6 @@ function main() {
   sendDecision('allow', null, allowExtra);
 }
 
-main();
+main().catch(() => {
+  sendDecision('allow');
+});

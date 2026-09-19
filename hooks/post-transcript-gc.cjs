@@ -25,7 +25,7 @@ function main() {
     process.exit(0);
   }
 
-  const transcriptPath = data.transcriptPath || '';
+  const transcriptPath = data.transcriptPath || data.transcript_path || data.transcriptFile || data.transcript_file || data.path || '';
   if (!transcriptPath || !fs.existsSync(transcriptPath)) {
     process.stdout.write('{}');
     process.exit(0);
@@ -70,6 +70,7 @@ function main() {
     }
 
     // 2. Lakukan Dynamic Context Pruning (DCP) pada step-step masa lalu
+    const initialStepsCount = steps.length;
     const modified = runDcpPipeline(steps, latestUserStepIdx);
 
     // 3. Tulis kembali ke disk secara aman jika ada perubahan
@@ -89,6 +90,30 @@ function main() {
           if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
         } catch (_) {}
       }
+
+      // 4. Telemetri metrik pemangkasan (Observability)
+      try {
+        const logDir = path.dirname(transcriptPath);
+        const metricsPath = path.join(logDir, 'gc-metrics.jsonl');
+        const originalBytes = rawContent.length;
+        const compactedBytes = compactedLines.length;
+        const savedBytes = Math.max(0, originalBytes - compactedBytes);
+        const savedPercent = originalBytes > 0
+          ? ((savedBytes / originalBytes) * 100).toFixed(1) + '%'
+          : '0.0%';
+
+        const metricRecord = JSON.stringify({
+          timestamp: new Date().toISOString(),
+          transcript: path.basename(transcriptPath),
+          originalSteps: initialStepsCount,
+          compactedSteps: steps.length,
+          originalBytes,
+          compactedBytes,
+          savedBytes,
+          savedPercent
+        }) + '\n';
+        fs.appendFileSync(metricsPath, metricRecord, 'utf-8');
+      } catch (_) {}
     }
   } catch (err) {
     // Non-blocking: Jika terjadi kesalahan parsing file, jangan hentikan eksekusi

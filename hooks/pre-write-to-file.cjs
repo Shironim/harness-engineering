@@ -4,6 +4,9 @@ const {
   recordTurnDenial,
   normalizePath
 } = require('./lib/session-state.cjs');
+const { logHookDecision } = require('./lib/audit-logger.cjs');
+
+const startTime = Date.now();
 
 function readStdin() {
   try {
@@ -19,6 +22,16 @@ function sendDecision(decision, reason, extra = {}) {
   if (decision === 'deny' && globalTranscriptPath) {
     recordTurnDenial(globalTranscriptPath);
   }
+  logHookDecision({
+    hookName: 'pre-write-to-file',
+    toolName: 'write_to_file',
+    decision,
+    reason,
+    durationMs: Date.now() - startTime,
+    extra: {
+      transcriptPath: globalTranscriptPath
+    }
+  });
   const payload = { decision, ...extra };
   if (reason) payload.reason = reason;
   process.stdout.write(JSON.stringify(payload));
@@ -84,7 +97,7 @@ function main() {
   // 2. ANTI-WIPE GUARD:
   // Dilarang menimpa file source code yang SUDAH ADA menggunakan write_to_file.
   // Modifikasi file yang sudah ada wajib menggunakan replace_file_content.
-  const sourceExts = /\.(vue|ts|js|php|blade\.php|jsx|tsx|css|scss|py|go|rs|sql|java|c|cpp|rb)$/i;
+  const sourceExts = /\.(vue|ts|mts|cts|js|cjs|mjs|php|blade\.php|jsx|tsx|css|scss|py|go|rs|sql|sh|bash|java|c|cpp|rb|json|ya?ml|toml)$/i;
   const isSourceCode = sourceExts.test(targetFile);
 
   if (isSourceCode && overwrite && fs.existsSync(targetFile)) {

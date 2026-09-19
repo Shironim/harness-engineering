@@ -6,6 +6,9 @@ const {
   normalizePath,
   isPathInside
 } = require('./lib/session-state.cjs');
+const { logHookDecision } = require('./lib/audit-logger.cjs');
+
+const startTime = Date.now();
 
 function readStdin() {
   try {
@@ -21,6 +24,16 @@ function sendDecision(decision, reason, extra = {}) {
   if (decision === 'deny' && globalTranscriptPath) {
     recordTurnDenial(globalTranscriptPath);
   }
+  logHookDecision({
+    hookName: 'pre-view-file',
+    toolName: 'view_file',
+    decision,
+    reason,
+    durationMs: Date.now() - startTime,
+    extra: {
+      transcriptPath: globalTranscriptPath
+    }
+  });
   const payload = { decision, ...extra };
   if (reason) payload.reason = reason;
   process.stdout.write(JSON.stringify(payload));
@@ -130,17 +143,17 @@ function main() {
     if (transcriptPath) {
       const { count, specificFileCount, totalLinesRead } = countCurrentTurnViewFiles(transcriptPath, normalizedPath, activeWorkspaces);
       
-      // Hitung apakah pemanggilan ini adalah precision slice (rentang sempit <= 40 baris pra-edit)
+      // Hitung apakah pemanggilan ini adalah targeted slice (rentang terarah <= 100 baris)
       const currentSpan = (startLine !== undefined && endLine !== undefined) ? (endLine - startLine + 1) : 0;
-      const isPrecisionSlice = currentSpan > 0 && currentSpan <= 40;
+      const isPrecisionSlice = currentSpan > 0 && currentSpan <= 100;
       
-      // Titik Keseimbangan: 8 calls untuk broad reading, 12 calls untuk precision slicing pra-edit
-      const MAX_VIEW_QUOTA = isPrecisionSlice ? 12 : 8;
+      // Titik Keseimbangan: 10 calls untuk broad reading, 15 calls untuk targeted slicing
+      const MAX_VIEW_QUOTA = isPrecisionSlice ? 15 : 10;
 
       if (count >= MAX_VIEW_QUOTA) {
         sendDecision(
           'deny',
-          `[READ QUOTA BREAKER] Kuota view_file (${MAX_VIEW_QUOTA} pemanggilan${isPrecisionSlice ? ' precision-slice' : ''}) telah tercapai untuk giliran ini.\n` +
+          `[READ QUOTA BREAKER] Kuota view_file (${MAX_VIEW_QUOTA} pemanggilan${isPrecisionSlice ? ' targeted-slice' : ''}) telah tercapai untuk giliran ini.\n` +
           `Daisy-chaining view_file dihentikan untuk melindungi context window dari memory rot.\n` +
           `Target: ${normalizedPath}\n` +
           `RUTE RESMI WAJIB (ACTIONABLE OFF-RAMP):\n` +
@@ -151,17 +164,13 @@ function main() {
         );
       }
 
-      // 2b. Anti-Slicing Loop: Mencegah pembacaan berkali-kali pada file yang sama (chunking bypass)
-      const currentSpan = (startLine !== undefined && endLine !== undefined) ? (endLine - startLine + 1) : 0;
-      const isPrecisionSlice = currentSpan > 0 && currentSpan <= 40;
-
-      // Pengecualian: Precision slice sempit (<= 40 baris) diperbolehkan hingga 7 kali (misal verifikasi pra-edit)
-      if (specificFileCount >= 4 && (!isPrecisionSlice || specificFileCount >= 7)) {
+      // 2b. Anti-Slicing Loop: Mencegah pembacaan berkali-kali tanpa batas pada file yang sama
+      if (specificFileCount >= 6 && (!isPrecisionSlice || specificFileCount >= 10)) {
         sendDecision(
           'deny',
           `[SLICING EROSION GUARD] File '${normalizedPath.split('/').pop()}' telah dibaca ${specificFileCount} kali dalam giliran ini.\n` +
-          `Membaca file yang sama secara berulang dalam potongan kecil (micro-slicing/chunking loop) dilarang.\n` +
-          `SOLUSI: Tentukan baris spesifik yang dibutuhkan (precision slice <= 40 baris) sebelum edit atau tanyakan ke user alih-alih membaca chunk berkelanjutan.`
+          `Membaca file yang sama secara berulang melebihi batas wajar dilarang.\n` +
+          `SOLUSI: Tentukan baris spesifik yang dibutuhkan (maksimal 200 baris) sebelum edit atau tanyakan ke user alih-alih membaca chunk berkelanjutan.`
         );
       }
 
@@ -175,28 +184,26 @@ function main() {
       }
     }
 
-    // 2d. Full File Dump Prohibition: Membaca tanpa batasan baris
-    if (startLine === undefined && endLine === undefined) {
+    // 2d. Mandatory Bounded Slicing: Mewajibkan kedua parameter StartLine dan EndLine
+    if (startLine === undefined || endLine === undefined) {
       sendDecision(
         'deny',
-        `[GUARDRAIL HARD BLOCK] Membaca seluruh file mentah (${normalizedPath.split('/').pop()}) tanpa batas baris dilarang keras.\n` +
-        (isExternalDoc ? `Dokumen di luar workspace wajib dipotong menggunakan StartLine & EndLine (<= 200 baris).\n` : '') +
+        `[GUARDRAIL HARD BLOCK] Membaca file (${normalizedPath.split('/').pop()}) tanpa batas baris lengkap dilarang keras.\n` +
+        `Kedua parameter StartLine dan EndLine WAJIB ditentukan untuk mencegah pembacaan file mentah tanpa batas.\n` +
         `RUTE RESMI:\n` +
-        `• Tentukan StartLine & EndLine sempit (±20-40 baris) di sekitar blok target.\n` +
-        `• Untuk kode frontend, gunakan strata-mcp:inspect_component. Untuk backend, gunakan codegraph.`
+        '• Tentukan StartLine & EndLine terarah (maksimal 200 baris) di sekitar blok target.\n' +
+        '• Untuk kode frontend, gunakan strata-mcp:inspect_component. Untuk backend, gunakan codegraph.'
       );
     }
 
-    // 2e. Span Limit Prohibition: Membaca potongan melebihi 200 baris
-    if (startLine !== undefined && endLine !== undefined) {
-      const lineSpan = endLine - startLine + 1;
-      if (lineSpan > 200) {
-        sendDecision(
-          'deny',
-          `[GUARDRAIL HARD BLOCK] Rentang baris terlalu lebar (${lineSpan} baris: L${startLine}-L${endLine}). Maksimal 200 baris.\n` +
-          `Persempit StartLine & EndLine (rekomendasi ±20-40 baris). Untuk eksplorasi arsitektur, gunakan strata-mcp atau codegraph.`
-        );
-      }
+    // 2e. Span Limit Prohibition: Membaca potongan melebihi 200 baris atau rentang terbalik
+    const lineSpan = endLine - startLine + 1;
+    if (lineSpan <= 0 || lineSpan > 200) {
+      sendDecision(
+        'deny',
+        `[GUARDRAIL HARD BLOCK] Rentang baris tidak valid atau terlalu lebar (${lineSpan} baris: L${startLine}-L${endLine}). Maksimal 200 baris.\n` +
+        `Gunakan pembacaan terarah (maksimal 200 baris) tepat sebelum edit. Untuk eksplorasi arsitektur, gunakan strata-mcp atau codegraph.`
+      );
     }
   }
 

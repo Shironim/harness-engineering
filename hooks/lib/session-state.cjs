@@ -34,6 +34,31 @@ function isPathInside(target, parent) {
 }
 
 /**
+ * Ekstraksi teks dari konten user secara aman, mendukung teks biasa dan multi-modal array.
+ */
+function extractTextContent(content) {
+  if (typeof content === 'string') {
+    return content;
+  }
+  if (Array.isArray(content)) {
+    return content
+      .map(part => {
+        if (typeof part === 'string') return part;
+        if (part && typeof part === 'object') {
+          return part.text || part.content || '';
+        }
+        return '';
+      })
+      .filter(Boolean)
+      .join('\n');
+  }
+  if (content && typeof content === 'object') {
+    return content.text || content.content || JSON.stringify(content);
+  }
+  return '';
+}
+
+/**
  * Mengambil turn interaksi terbaru dari user beserta step-step setelahnya secara aman.
  * Menelusuri transkrip dari baris terakhir untuk menemukan USER_INPUT tanpa batas baris kaku.
  */
@@ -80,11 +105,179 @@ function getLatestUserTurn(transcriptPath) {
 
     return {
       stepIndex: userStep.step_index,
-      content: userStep.content || '',
+      content: extractTextContent(userStep.content),
       turnSteps
     };
   } catch (_) {
     return { stepIndex: 0, content: '', turnSteps: [] };
+  }
+}
+
+/**
+ * Mengambil konteks turn sebelumnya (misal: apakah agent sebelumnya memanggil ask_question atau aksi lain).
+ */
+function getLastTurnContext(transcriptPath) {
+  if (!transcriptPath || !fs.existsSync(transcriptPath)) {
+    return { lastActionName: '', lastAgentContent: '' };
+  }
+
+  try {
+    const content = fs.readFileSync(transcriptPath, 'utf-8');
+    const lines = content.replace(/\r\n/g, '\n').trim().split('\n');
+    if (lines.length === 0) return { lastActionName: '', lastAgentContent: '' };
+
+    let latestUserIdx = -1;
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i].trim();
+      if (!line) continue;
+      if (line.includes('"USER_INPUT"') || line.includes('"type":"USER_INPUT"')) {
+        try {
+          const parsed = JSON.parse(line);
+          if (parsed.type === 'USER_INPUT') {
+            latestUserIdx = i;
+            break;
+          }
+        } catch (_) {}
+      }
+    }
+
+    if (latestUserIdx <= 0) return { lastActionName: '', lastAgentContent: '' };
+
+    let lastActionName = '';
+    let lastAgentContent = '';
+    let prevUserPrompt = '';
+
+    for (let i = latestUserIdx - 1; i >= 0; i--) {
+      const line = lines[i].trim();
+      if (!line) continue;
+      try {
+        const step = JSON.parse(line);
+        if (step.type === 'USER_INPUT') {
+          if (!prevUserPrompt) {
+            prevUserPrompt = extractTextContent(step.content || '');
+          }
+          break;
+        }
+        if (step.tool_calls && Array.isArray(step.tool_calls)) {
+          for (const call of step.tool_calls) {
+            if (call.name === 'ask_question') {
+              lastActionName = 'ask_question';
+              break;
+            }
+            if (!lastActionName && call.name) {
+              lastActionName = call.name;
+            }
+          }
+        }
+        if (!lastAgentContent && (step.content || step.thinking)) {
+          lastAgentContent = extractTextContent(step.content || '');
+        }
+      } catch (_) {}
+    }
+
+    const hasActivePlan = /(- \[[ x]\]|rencana|roadmap|fase \d|langkah \d|brief)/i.test(lastAgentContent);
+
+    return { lastActionName, lastAgentContent, prevUserPrompt, hasActivePlan };
+  } catch (_) {
+    return { lastActionName: '', lastAgentContent: '', prevUserPrompt: '', hasActivePlan: false };
+  }
+}
+
+/**
+ * Mengekstrak riwayat interaksi multi-turn (default: 4 turn terakhir)
+ * untuk memberikan memori percakapan holistik kepada Jev Coprocessor.
+ */
+function getRecentConversationHistory(transcriptPath, maxTurns = 4) {
+  if (!transcriptPath || !fs.existsSync(transcriptPath)) {
+    return { turns: [], activeGoal: '', recentFilesTouched: [] };
+  }
+
+  try {
+    const raw = fs.readFileSync(transcriptPath, 'utf-8');
+    const lines = raw.trim().split('\n');
+    if (lines.length === 0) {
+      return { turns: [], activeGoal: '', recentFilesTouched: [] };
+    }
+
+    const turns = [];
+    const filesTouched = new Set();
+    let currentTurn = null;
+    let turnCount = 0;
+
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i].trim();
+      if (!line) continue;
+
+      let step;
+      try {
+        step = JSON.parse(line);
+      } catch (_) {
+        continue;
+      }
+
+      // Deteksi file touched dari tool_calls
+      if (step.tool_calls && Array.isArray(step.tool_calls)) {
+        for (const call of step.tool_calls) {
+          const args = call.args || {};
+          const target = args.TargetFile || args.AbsolutePath || args.filePath || args.file_path;
+          if (target && typeof target === 'string') {
+            filesTouched.add(path.basename(target).replace(/["']/g, ''));
+          }
+        }
+      }
+
+      if (step.type === 'USER_INPUT' || step.source === 'USER_EXPLICIT') {
+        const userText = extractTextContent(step.content || '').trim();
+        if (userText) {
+          if (currentTurn) {
+            turns.unshift(currentTurn);
+            turnCount++;
+            if (turnCount >= maxTurns) break;
+          }
+          currentTurn = {
+            role: 'user',
+            content: userText.slice(0, 800),
+            agentAction: '',
+            agentSummary: ''
+          };
+        }
+      } else if (step.type === 'PLANNER_RESPONSE' || step.source === 'MODEL') {
+        if (currentTurn) {
+          if (!currentTurn.agentSummary) {
+            const rawContent = extractTextContent(step.content || '');
+            if (rawContent) {
+              currentTurn.agentSummary = rawContent.slice(0, 600).replace(/\n+/g, ' ');
+            }
+          }
+          if (step.tool_calls && Array.isArray(step.tool_calls) && !currentTurn.agentAction) {
+            currentTurn.agentAction = step.tool_calls.map(c => c.name).join(', ');
+          }
+        }
+      }
+    }
+
+    if (currentTurn && turnCount < maxTurns) {
+      turns.unshift(currentTurn);
+    }
+
+    let activeGoal = '';
+    for (const t of turns) {
+      if (/brief|roadmap|plan|refactor|harness|septum/i.test(t.content)) {
+        activeGoal = t.content.slice(0, 200);
+        break;
+      }
+    }
+
+    const activeProject = path.basename(process.cwd());
+
+    return {
+      turns,
+      activeGoal,
+      activeProject,
+      recentFilesTouched: Array.from(filesTouched).slice(0, 8)
+    };
+  } catch (_) {
+    return { turns: [], activeGoal: '', recentFilesTouched: [] };
   }
 }
 
@@ -238,6 +431,7 @@ function recordTurnDenial(transcriptPath) {
 function countCurrentTurnContextMode(transcriptPath) {
   const userTurn = getLatestUserTurn(transcriptPath);
   let count = 0;
+  const diagnosticTools = new Set(['ctx_doctor', 'ctx_stats', 'ctx_upgrade', 'ctx_purge', 'ctx_insight']);
   for (const step of userTurn.turnSteps) {
     if (step.tool_calls && Array.isArray(step.tool_calls)) {
       for (const call of step.tool_calls) {
@@ -245,7 +439,7 @@ function countCurrentTurnContextMode(transcriptPath) {
           const args = call.args || {};
           const server = (args.ServerName || '').toLowerCase();
           const tool = (args.ToolName || '').toLowerCase();
-          if (server === 'context-mode' || tool.startsWith('ctx_')) {
+          if ((server.includes('context-mode') || tool.startsWith('ctx_')) && !diagnosticTools.has(tool)) {
             count++;
           }
         }
@@ -260,7 +454,7 @@ function countCurrentTurnContextMode(transcriptPath) {
 }
 
 /**
- * Menghitung total pemanggilan seluruh tool investigasi (search, AST inspect, dan context-mode)
+ * Menghitung total pemanggilan seluruh tool investigasi (search, AST inspect, dan context-mode scanning)
  * dalam turn user saat ini untuk mencegah panic pivoting lintas tool secara deterministik.
  */
 function countCurrentTurnUnifiedInvestigations(transcriptPath) {
@@ -273,6 +467,7 @@ function countCurrentTurnUnifiedInvestigations(transcriptPath) {
   const searchMcpTools = new Set([
     'find_code', 'search_code', 'search_notes', 'ctx_search', 'get_file_contents'
   ]);
+  const diagnosticTools = new Set(['ctx_doctor', 'ctx_stats', 'ctx_upgrade', 'ctx_purge', 'ctx_insight']);
 
   for (const step of userTurn.turnSteps) {
     if (step.tool_calls && Array.isArray(step.tool_calls)) {
@@ -284,11 +479,13 @@ function countCurrentTurnUnifiedInvestigations(transcriptPath) {
           const args = call.args || {};
           const server = (args.ServerName || '').toLowerCase();
           const tool = (args.ToolName || '').toLowerCase();
+          if (diagnosticTools.has(tool)) {
+            continue;
+          }
           if (searchMcpTools.has(args.ToolName || '')) {
             totalCount++;
             searchCount++;
-          } else if (server === 'context-mode' || tool.startsWith('ctx_')) {
-            totalCount++;
+          } else if (server.includes('context-mode') || tool.startsWith('ctx_')) {
             ctxCount++;
           }
         }
@@ -308,10 +505,12 @@ module.exports = {
   normalizePath,
   isPathInside,
   getLatestUserTurn,
+  getLastTurnContext,
   countCurrentTurnInvestigations,
   countCurrentTurnViewFiles,
   countCurrentTurnContextMode,
   countCurrentTurnUnifiedInvestigations,
+  getRecentConversationHistory,
   isCircuitBreakerTripped,
   recordTurnDenial
 };

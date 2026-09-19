@@ -82,6 +82,8 @@ function mapToolInvocations(steps) {
   for (const step of steps) {
     if (step.type === 'USER_INPUT') {
       currentTurn++;
+      // Clear any leftover orphaned tool calls on new user turn to prevent cross-turn skew
+      toolQueue.length = 0;
       continue;
     }
 
@@ -96,7 +98,11 @@ function mapToolInvocations(steps) {
         });
       }
     } else if (step.type === 'GENERIC') {
-      if (toolQueue.length > 0) {
+      // Hanya petakan jika step merupakan output pemanggilan tool yang valid (bukan notifikasi sistem/event eksternal)
+      const isSystemEvent = step.source === 'SYSTEM' || step.source === 'SYSTEM_SDK' || step.source === 'USER_EXPLICIT';
+      const isToolOutput = step.source === 'MODEL' || step.source === 'TOOL' || !step.source;
+
+      if (!isSystemEvent && isToolOutput && toolQueue.length > 0) {
         const inv = toolQueue.shift();
         invocations.push({
           ...inv,

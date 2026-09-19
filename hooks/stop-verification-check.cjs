@@ -7,6 +7,10 @@ const {
   recordTurnDenial,
   normalizePath
 } = require('./lib/session-state.cjs');
+const { evaluateCodeIntegrity } = require('./lib/jev-client.cjs');
+const { logHookDecision } = require('./lib/audit-logger.cjs');
+
+const startTime = Date.now();
 
 function readStdin() {
   try {
@@ -22,6 +26,16 @@ function sendDecision(decision, reason) {
   if (decision === 'deny' && globalTranscriptPath) {
     recordTurnDenial(globalTranscriptPath);
   }
+  logHookDecision({
+    hookName: 'stop-verification-check',
+    toolName: 'stop_turn',
+    decision,
+    reason,
+    durationMs: Date.now() - startTime,
+    extra: {
+      transcriptPath: globalTranscriptPath
+    }
+  });
   const payload = { decision };
   if (reason) payload.reason = reason;
   process.stdout.write(JSON.stringify(payload));
@@ -129,7 +143,20 @@ function checkSyntax(filePath) {
   return null;
 }
 
-function main() {
+/**
+ * Ekstrak snippet dinamis di sekitar trigger agar tidak terpotong di awal file.
+ * Mengambil konteks seimbang sebelum dan sesudah kecocokan regex.
+ */
+function extractContextAroundTrigger(content, regex, windowSize = 1800) {
+  const cleanRegex = new RegExp(regex.source, regex.flags.replace('g', ''));
+  const match = cleanRegex.exec(content);
+  if (!match) return content.slice(0, windowSize * 2);
+  const start = Math.max(0, match.index - windowSize);
+  const end = Math.min(content.length, match.index + match[0].length + windowSize);
+  return content.slice(start, end);
+}
+
+async function main() {
   const rawInput = readStdin();
   if (!rawInput.trim()) {
     sendDecision('allow');
@@ -155,7 +182,7 @@ function main() {
   const userTurn = getLatestUserTurn(globalTranscriptPath);
   const modifiedFiles = new Set();
 
-  // 1. Ekstrak berkas-berkas yang dimodifikasi oleh agen dalam turn aktif
+  // 1a. Ekstrak berkas-berkas yang dimodifikasi oleh agen via tool replace_file_content / write_to_file
   for (const step of userTurn.turnSteps) {
     if (step.tool_calls && Array.isArray(step.tool_calls)) {
       for (const call of step.tool_calls) {
@@ -176,12 +203,58 @@ function main() {
     }
   }
 
-  // Jika tidak ada berkas kode yang diubah pada turn ini, izinkan stop
+  // 1b. Deteksi modifikasi working tree via git status (menangkap edit via run_command: sed, echo, patch, heredoc)
+  const candidateWorkspaces = new Set();
+  if (Array.isArray(data.workspaceDirectories)) {
+    for (const ws of data.workspaceDirectories) if (ws) candidateWorkspaces.add(ws);
+  }
+  if (typeof data.activeWorkspace === 'string' && data.activeWorkspace) {
+    candidateWorkspaces.add(data.activeWorkspace);
+  } else if (Array.isArray(data.activeWorkspace)) {
+    for (const ws of data.activeWorkspace) if (ws) candidateWorkspaces.add(ws);
+  }
+  if (candidateWorkspaces.size === 0) {
+    candidateWorkspaces.add(process.cwd());
+  }
+
+  for (const ws of candidateWorkspaces) {
+    try {
+      const res = spawnSync('git', ['status', '--porcelain', '-uall'], {
+        cwd: ws,
+        encoding: 'utf-8',
+        timeout: 1500,
+        stdio: ['ignore', 'pipe', 'ignore']
+      });
+      if (res.status === 0 && res.stdout) {
+        const lines = res.stdout.split('\n');
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          const rawPath = line.slice(3).trim();
+          const targetRel = rawPath.includes('->') ? rawPath.split('->').pop().trim() : rawPath;
+          const cleanRel = targetRel.replace(/^["']|["']$/g, '');
+          const fullPath = normalizePath(path.resolve(ws, cleanRel));
+          const isInternalArtifact =
+            /\/(antigravity-cli|antigravity-ide|\.antigravity|\.gemini)\/brain\/[a-f0-9-]+\//i.test(fullPath) ||
+            /\/scratch\/.*$/i.test(fullPath);
+          if (!isInternalArtifact && fs.existsSync(fullPath)) {
+            const isSourceCode = /\.(vue|ts|js|cjs|mjs|php|blade\.php|jsx|tsx|css|scss|py|go|rs|sql|sh|bash|java|c|cpp|rb|graphql|gql|json|ya?ml|toml)$/i.test(fullPath);
+            if (isSourceCode) {
+              modifiedFiles.add(fullPath);
+            }
+          }
+        }
+      }
+    } catch (_) {}
+  }
+
+  // Jika tidak ada berkas kode yang diubah pada turn ini atau working tree bersih, izinkan stop
   if (modifiedFiles.size === 0) {
     sendDecision('allow');
   }
 
   const failures = [];
+  const candidateFiles = [];
+  const kludgeRegex = /(\bTODO\b|\bFIXME\b|throw new (Error|Exception)\(['"]Not implemented|return null;\s*\/\/\s*placeholder)/i;
 
   // 2. Jalankan validasi pada setiap berkas yang dimodifikasi
   for (const file of modifiedFiles) {
@@ -201,10 +274,36 @@ function main() {
       const syntaxError = checkSyntax(file);
       if (syntaxError) {
         failures.push(`• [${path.basename(file)}]: ${syntaxError}`);
+        continue;
+      }
+
+      // C. Kumpulkan berkas kandidat Zero Kludge untuk evaluasi paralel
+      if (kludgeRegex.test(content)) {
+        const snippet = extractContextAroundTrigger(content, kludgeRegex);
+        candidateFiles.push({ file, snippet });
       }
     } catch (readErr) {
       // Lewati jika berkas terhalang akses atau terhapus
     }
+  }
+
+  // C. Pemeriksaan Integritas Semantik Paralel (Zero Kludge Guard via TypeSafe Jev)
+  if (candidateFiles.length > 0) {
+    const auditResults = await Promise.allSettled(
+      candidateFiles.map(({ file, snippet }) => evaluateCodeIntegrity(file, snippet, 5000))
+    );
+
+    auditResults.forEach((res, idx) => {
+      if (res.status === 'fulfilled') {
+        const audit = res.value;
+        if (audit && audit.value === 'KLUDGE_OR_STUB' && audit.confidence >= 0.85) {
+          failures.push(
+            `• [${path.basename(candidateFiles[idx].file)}]: [ZERO KLUDGE VIOLATION] Ditemukan implementasi stub/placeholder belum tuntas.\n` +
+            `  Evaluasi Jev: ${audit.reason || 'Kode belum memenuhi standar implementasi utuh.'}`
+          );
+        }
+      }
+    });
   }
 
   // 3. Evaluasi Hasil
@@ -212,14 +311,14 @@ function main() {
     sendDecision(
       'deny',
       `[STOP BLOCKED: VERIFICATION GATEKEEPER]\n` +
-      `Agen dilarang menyelesaikan tugas karena ditemukan berkas kode dengan kesalahan sintaks atau konflik:\n\n` +
+      `Agen dilarang menyelesaikan tugas karena ditemukan berkas kode dengan kesalahan sintaks, konflik, atau pelanggaran Zero Kludge:\n\n` +
       failures.join('\n\n') +
       `\n\nTINDAKAN WAJIB:\n` +
-      `Perbaiki kesalahan sintaks/konflik pada berkas di atas menggunakan 'replace_file_content' sebelum mengakhiri turn.`
+      `Perbaiki kesalahan sintaks/konflik atau tuntaskan stub pada berkas di atas menggunakan 'replace_file_content' sebelum mengakhiri turn.`
     );
   }
 
   sendDecision('allow');
 }
 
-main();
+main().catch(() => sendDecision('allow'));
