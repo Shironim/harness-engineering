@@ -5,6 +5,8 @@ yarn-debug.log*
 yarn-error.log*
 .agent_session_state.json
 session-state.json
+.septum/
+
 
 # Dependency Directories
 node_modules/
